@@ -29,7 +29,8 @@ const FULL_CYCLE = BLACK_DURATION + TO_WHITE_DURATION + WHITE_DURATION + TO_BLAC
 
 function setup() {
   createCanvas(windowWidth, windowHeight);
-  pixelDensity(Math.min(window.devicePixelRatio || 1, 2));
+  // Lower pixel density for better performance, especially on mobile
+  pixelDensity(1);
   BASE_UNIT = Math.min(width, height);
 
   // Initial seed so the structure is stable until user changes it
@@ -156,8 +157,8 @@ function generateWatercolorBackground(pg, time = 0) {
     blendModeT = (easedT - 0.15) / (0.85 - 0.15);
   }
 
-  const numSplotches = 6; // allow more concurrent blobs on screen
-  const arr_num = 230; // many small sub-shapes per blob for rich texture
+  const numSplotches = 4; // Reduced from 6 for better performance
+  const arr_num = 120; // Reduced from 230 - less subshapes but still looks good
 
   // Shared one-shot life timing for all blobs
   const assembleDuration = 3000;   // ms
@@ -365,9 +366,9 @@ function generateWatercolorBackground(pg, time = 0) {
     pg.scale(pulse);
 
     for (let k = 0; k < arr_num; k++) {
-      let angle_sep = pg.int(3, pg.noise(k) * 7);
+      let angle_sep = pg.int(3, pg.noise(k) * 6); // Simplified range
       let points = createShape(radius, angle_sep, pg);
-      let form = transformShape(points, 4, 0.5, pg);
+      let form = transformShape(points, 3, 0.5, pg); // Reduced recursion from 4 to 3
       arr.push(form);
     }
 
