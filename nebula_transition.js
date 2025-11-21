@@ -445,9 +445,9 @@ function generateWatercolorBackground(pg, time = 0) {
       
       // Base alpha adjusts based on blend mode
       // ADD mode (blendModeT=0): 1.2 alpha (higher to ensure visibility)
-      // BLEND mode (blendModeT=0.5): 1.5 alpha (transition)
-      // MULTIPLY mode (blendModeT=1): 1.85 alpha (much higher since multiply darkens heavily)
-      let baseAlpha = pg.lerp(1.2, 1.85, blendModeSmooth) * (100 / arr_num);
+      // BLEND mode (blendModeT=0.5): 1.6 alpha (transition)
+      // MULTIPLY mode (blendModeT=1): 2.2 alpha (very high for vibrant colors on white)
+      let baseAlpha = pg.lerp(1.2, 2.2, blendModeSmooth) * (100 / arr_num);
       
       // Fade in/out multiplier for ADD mode to prevent popping
       // Near ADD mode edges, gradually fade but keep visible
@@ -463,8 +463,8 @@ function generateWatercolorBackground(pg, time = 0) {
       
       // Boost saturation during white phase to compensate for MULTIPLY darkening
       // ADD mode: 94 saturation
-      // MULTIPLY mode: 98 saturation (maxed out for vibrancy)
-      let baseSat = pg.lerp(94, 98, blendModeSmooth);
+      // MULTIPLY mode: 100 saturation (maximum for extreme vibrancy)
+      let baseSat = pg.lerp(94, 100, blendModeSmooth);
 
       // One-shot life curve for brightness (lifeAlpha) that matches the
       // same timing as the geometry life above.
@@ -523,11 +523,13 @@ function generateWatercolorBackground(pg, time = 0) {
       const midRing = rNorm * (1 - rNorm); // 0 at center/edge, peak ~0.25 at rNorm=0.5
       const radialFactor = pg.map(midRing, 0, 0.25, 0.5, 1.0); // center ~0.5, mid ~1.0, edge ~0.5
 
-      // Radial saturation gradient: softer gradient for more color throughout
+      // Radial saturation gradient: keep much more saturation on white
       // Black: pow(rNorm, 0.5) - concentrated center but not too tight
-      // White: pow(rNorm, 0.8) - gentler falloff for richer colors throughout
-      const saturationPower = pg.lerp(0.5, 0.8, easedT);
-      const saturationFactor = pg.map(pg.pow(rNorm, saturationPower), 0, 1, 1.0, 0.35); // More color at edges
+      // White: pow(rNorm, 1.2) - very gentle falloff, colors stay vibrant throughout
+      const saturationPower = pg.lerp(0.5, 1.2, easedT);
+      // White phase: keep 55% saturation at edges instead of 35%
+      const minSat = pg.lerp(0.35, 0.55, easedT);
+      const saturationFactor = pg.map(pg.pow(rNorm, saturationPower), 0, 1, 1.0, minSat);
       let saturation = baseSat * saturationFactor;
 
       // Final alpha combines: baseAlpha * blob life envelope * local opacity FX * global reseed fade-in * radial
