@@ -445,9 +445,9 @@ function generateWatercolorBackground(pg, time = 0) {
       
       // Base alpha adjusts based on blend mode
       // ADD mode (blendModeT=0): 1.2 alpha (higher to ensure visibility)
-      // BLEND mode (blendModeT=0.5): 1.4 alpha (transition)
-      // MULTIPLY mode (blendModeT=1): 1.65 alpha (high since multiply darkens)
-      let baseAlpha = pg.lerp(1.2, 1.65, blendModeSmooth) * (100 / arr_num);
+      // BLEND mode (blendModeT=0.5): 1.5 alpha (transition)
+      // MULTIPLY mode (blendModeT=1): 1.85 alpha (much higher since multiply darkens heavily)
+      let baseAlpha = pg.lerp(1.2, 1.85, blendModeSmooth) * (100 / arr_num);
       
       // Fade in/out multiplier for ADD mode to prevent popping
       // Near ADD mode edges, gradually fade but keep visible
@@ -461,8 +461,10 @@ function generateWatercolorBackground(pg, time = 0) {
       }
       baseAlpha *= additiveFade;
       
-      // Keep saturation high and consistent for persistent color
-      let baseSat = pg.lerp(94, 92, blendModeSmooth);
+      // Boost saturation during white phase to compensate for MULTIPLY darkening
+      // ADD mode: 94 saturation
+      // MULTIPLY mode: 98 saturation (maxed out for vibrancy)
+      let baseSat = pg.lerp(94, 98, blendModeSmooth);
 
       // One-shot life curve for brightness (lifeAlpha) that matches the
       // same timing as the geometry life above.
@@ -548,12 +550,12 @@ function generateWatercolorBackground(pg, time = 0) {
         drawShape(form, pg.color(0, 0, 100, whiteAlpha), pg);
       }
       
-      // Brightness smoothly interpolated to keep blobs visible
+      // Brightness smoothly interpolated - boost heavily for white phase
       // Black/ADD: 96 (bright but controlled)
-      // White/MULTIPLY: 98 (very high to maintain vibrancy and detail)
+      // White/MULTIPLY: 100 (maximum brightness to fight darkening)
       // Extra smooth transition prevents banding
       const brightnessT = easedT * easedT * easedT * (easedT * (easedT * 6 - 15) + 10);
-      const brightness = pg.lerp(96, 98, brightnessT);
+      const brightness = pg.lerp(96, 100, brightnessT);
       drawShape(form, pg.color(zone_hue, saturation, brightness, alpha), pg);
       pg.pop();
     }
