@@ -27,6 +27,9 @@ const WHITE_DURATION = 15000;      // 15 seconds at white (more time to apprecia
 const TO_BLACK_DURATION = 10000;   // 10 seconds transitioning back to black (very smooth)
 const FULL_CYCLE = BLACK_DURATION + TO_WHITE_DURATION + WHITE_DURATION + TO_BLACK_DURATION; // 55 seconds total
 
+// Detect mobile for rendering adjustments
+const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+
 function setup() {
   createCanvas(windowWidth, windowHeight);
   // Lower pixel density for better performance, especially on mobile
@@ -127,40 +130,30 @@ function generateWatercolorBackground(pg, time = 0) {
 
   pg.blendMode(pg.BLEND);
   
-  // Interpolate background from black (0,0,0) to cream (40,8,96)
+  // Simple uniform background transition
   const bgHue = pg.lerp(0, 40, easedT);
   const bgSat = pg.lerp(0, 8, easedT);
   const bgBri = pg.lerp(0, 96, easedT);
   pg.background(bgHue, bgSat, bgBri);
   
-  // Blend mode transitions SMOOTHLY with background - colors persist throughout
-  // Use transitionT (0-1) to drive blend mode so it changes with the background
-  let blendModeFadeT = transitionT; // 0 = ADD mode, 1 = MULTIPLY mode
-  
-  // During ANY transition, stay 100% in BLEND mode for seamless color persistence
-  // Only use pure ADD/MULTIPLY when fully settled on black/white
-  if (transitionT > 0 && transitionT < 1) {
-    // Currently transitioning - force BLEND mode for smoothest possible transition
-    blendModeFadeT = 0.5; // Dead center = pure BLEND mode
-  }
-  
-  // Apply smoothstep easing to blend mode transition
-  const easedBlendT = blendModeFadeT * blendModeFadeT * blendModeFadeT * (blendModeFadeT * (blendModeFadeT * 6 - 15) + 10);
-  
-  // Set blend mode - use pure BLEND during all transitions for maximum smoothness
-  if (easedBlendT < 0.2) {
+  // Switch blend mode during grayscale phase when it's imperceptible
+  // Use easedT to check when saturation is at 0 (40-60%)
+  if (easedT < 0.4) {
     pg.blendMode(pg.ADD);
-  } else if (easedBlendT >= 0.8) {
-    pg.blendMode(pg.MULTIPLY);
   } else {
-    pg.blendMode(pg.BLEND);
+    pg.blendMode(pg.MULTIPLY);
   }
   
-  // Calculate blend mode transition factor for parameter adjustments (0 = ADD, 1 = MULTIPLY)
-  let blendModeT = easedBlendT;
-
+  // Track blend mode for alpha adjustments (0 = ADD, 1 = MULTIPLY)
+  const blendModeT = transitionT < 0.5 ? 0 : 1;
+  
   const numSplotches = 8; // More manageable count (was 12, reduced for less stress)
   const arr_num = 150; // Good detail level (was 180, slightly reduced)
+  
+  // Mobile: reduce opacity modulation depth for smoother appearance
+  if (isMobile && params.opacityDepth > 0.5) {
+    params.opacityDepth = 0.5; // Less flickering on mobile
+  }
 
   // Shared one-shot life timing for all blobs (DYNAMIC - slow, graceful evolution)
   const assembleDuration = 4000;   // ms (was 2500 - slower, more gradual birth)
@@ -282,9 +275,9 @@ function generateWatercolorBackground(pg, time = 0) {
         zone_x = pg.width / 2;
         zone_y = pg.height / 2;
       } else if (i < 3) {
-        // Blobs 1-2: spread far from center to respect 30% min spacing
+        // Blobs 1-2: spread far from center to respect 35% min spacing
         const angleOffset = (i * 120 + cycleIndex * 40) % 360;
-        const radiusOffset = BASE_UNIT * 0.35; // 35% offset to ensure 30%+ separation from center blob
+        const radiusOffset = BASE_UNIT * 0.40; // 40% offset to ensure 35%+ separation from center blob
         zone_x = pg.width / 2 + pg.cos(angleOffset) * radiusOffset;
         zone_y = pg.height / 2 + pg.sin(angleOffset) * radiusOffset;
       } else {
@@ -314,8 +307,8 @@ function generateWatercolorBackground(pg, time = 0) {
           for (const s of placedSplotches) {
             const d = pg.dist(zone_x, zone_y, s.x, s.y);
 
-            // Enforce minimum separation of 30% of screen size (maximum breathing room)
-            const minSeparation = BASE_UNIT * 0.30;
+            // Enforce minimum separation of 35% of screen size (extra space for white mode)
+            const minSeparation = BASE_UNIT * 0.35;
             
             // Avoid stacking blobs with very similar hues directly on top
             // of each other: if hues are close, enforce a larger minimum
@@ -501,20 +494,47 @@ function generateWatercolorBackground(pg, time = 0) {
       pg.translate(jx, jy);
 
       // Alpha transitions smoothly with the ACTUAL background transition
-      // Use easedT (same as background) for perfectly synchronized, imperceptible changes
-      // This ensures alpha changes at EXACTLY the same rate as background brightness
+      // Use easedT (same as background) for perfectly synchronized changes
+      // Apply EXTRA smoothing to alpha for ultra-smooth, imperceptible changes
       const alphaT = easedT; // 0 = black bg, 1 = white bg (with smoothstep easing)
       
-      // Base alpha adjusts gradually as background changes
-      // Black background (easedT=0): 1.3 alpha (visibility on dark)
-      // White background (easedT=1): 1.8 alpha (reduced to prevent muddy overlaps in MULTIPLY)
-      // Uses same smoothstep easing as background for perfectly natural transitions
-      let baseAlpha = pg.lerp(1.3, 1.8, alphaT) * (100 / arr_num);
+      // Double-smoothstep for even gentler alpha transitions
+      const extraSmoothAlpha = alphaT * alphaT * (3 - 2 * alphaT);
       
-      // Saturation also uses same easing as background for perfect sync
-      // Black background: 94 saturation
-      // White background: 100 saturation (maximum for vibrancy on light bg)
-      let baseSat = pg.lerp(94, 100, alphaT);
+      // Saturation creates grayscale transition - symmetrical for both directions
+      // Calculate this FIRST so we can use it for alpha
+      const satDistFromCenter = Math.abs(alphaT - 0.5) * 2; // 0 at center, 1 at edges
+      let saturationCurve;
+      if (satDistFromCenter > 0.8) {
+        // Far from center (0-10% and 90-100%): fully saturated
+        saturationCurve = 1.0;
+      } else if (satDistFromCenter > 0.3) {
+        // Approaching center (10-35% and 65-90%): gradual desaturation
+        saturationCurve = pg.map(satDistFromCenter, 0.8, 0.3, 1.0, 0);
+      } else {
+        // Near center (35-65%): fully grayscale - extended phase
+        saturationCurve = 0;
+      }
+      
+      // Alpha: low during black, boost during grayscale for visibility, higher for white
+      let baseAlpha;
+      if (saturationCurve < 0.5) {
+        // During grayscale/desaturated phase: boost to 2.0 for dark gray visibility
+        const desatMix = 1 - (saturationCurve / 0.5);
+        const normalAlpha = alphaT < 0.5 ? 1.0 : pg.lerp(1.0, 1.8, (alphaT - 0.5) * 2);
+        baseAlpha = pg.lerp(normalAlpha, 2.0, desatMix) * (100 / arr_num);
+      } else if (alphaT < 0.5) {
+        // Black/ADD phase (saturated): stay at 1.0
+        baseAlpha = 1.0 * (100 / arr_num);
+      } else {
+        // White/MULTIPLY phase (saturated): gradually increase to 1.8
+        const whiteT = (alphaT - 0.5) * 2;
+        baseAlpha = pg.lerp(1.0, 1.8, whiteT * whiteT * (3 - 2 * whiteT)) * (100 / arr_num);
+      }
+      
+      // Apply saturation - boost white mode for more vibrancy
+      // Black mode: 94, White mode: 100 (was already at max, but apply to final saturation too)
+      let baseSat = alphaT < 0.5 ? 94 * saturationCurve : 100 * saturationCurve;
 
       // One-shot life curve for brightness (lifeAlpha) that matches the
       // same timing as the geometry life above.
@@ -560,7 +580,9 @@ function generateWatercolorBackground(pg, time = 0) {
         fadeFactor = 1 - (1 - fadeFactor) * dimFactor;
 
         // DYNAMIC: Lower minimum for more dramatic opacity variation
-        fadeFactor = 0.35 + 0.65 * fadeFactor; // clamp roughly to [0.35, 1] (was 0.45-1)
+        // Mobile: higher minimum for smoother, less jumpy appearance
+        const minFade = isMobile ? 0.55 : 0.35;
+        fadeFactor = minFade + (1 - minFade) * fadeFactor;
       }
 
       // Radial attenuation so centers stay softer: reduce opacity near
@@ -569,14 +591,17 @@ function generateWatercolorBackground(pg, time = 0) {
       const distFromCenter = pg.sqrt(jx * jx + jy * jy);
       const rNorm = pg.constrain(distFromCenter / radius, 0, 1); // 0 at center, 1 at approx edge
       const midRing = rNorm * (1 - rNorm); // 0 at center/edge, peak ~0.25 at rNorm=0.5
-      const radialFactor = pg.map(midRing, 0, 0.25, 0.5, 1.0); // center ~0.5, mid ~1.0, edge ~0.5
+      // Mobile: softer radial falloff for more feathered edges (0.65 instead of 0.5)
+      const centerOpacity = isMobile ? 0.65 : 0.5;
+      const radialFactor = pg.map(midRing, 0, 0.25, centerOpacity, 1.0);
 
-      // Radial saturation gradient: keep much more saturation on white
+      // Radial saturation gradient: keep much more saturation on white for vibrancy
       // Black: pow(rNorm, 0.5) - concentrated center but not too tight
-      // White: pow(rNorm, 1.2) - very gentle falloff, colors stay vibrant throughout
-      const saturationPower = pg.lerp(0.5, 1.2, easedT);
-      // White phase: keep 55% saturation at edges instead of 35%
-      const minSat = pg.lerp(0.35, 0.55, easedT);
+      // White: pow(rNorm, 1.4) - very gentle falloff, colors stay vibrant to edges
+      // Mobile: even gentler falloff for softer edges
+      const saturationPower = isMobile ? pg.lerp(0.7, 1.6, easedT) : pg.lerp(0.5, 1.4, easedT);
+      // White phase: keep 75% saturation at edges for more vibrancy (was 55%)
+      const minSat = isMobile ? pg.lerp(0.40, 0.80, easedT) : pg.lerp(0.35, 0.75, easedT);
       const saturationFactor = pg.map(pg.pow(rNorm, saturationPower), 0, 1, 1.0, minSat);
       let saturation = baseSat * saturationFactor;
 
@@ -590,22 +615,32 @@ function generateWatercolorBackground(pg, time = 0) {
         saturation = min(100, saturation * 1.05);
       }
 
-      // White glow creates depth but must be controlled in ADD mode
-      // Black/ADD version: 0.4 alpha (moderate glow to avoid blowout)
-      // White/MULTIPLY version: 0.15 alpha (subtle halo)
-      // Use power curve to keep glow visible longer
-      const whiteGlowStrength = pg.lerp(0.4, 0.15, pg.pow(easedT, 2.0));
-      if (whiteGlowStrength > 0.05) {
-        const whiteAlpha = alpha * whiteGlowStrength;
-        drawShape(form, pg.color(0, 0, 100, whiteAlpha), pg);
+      // White glow creates depth but must be controlled - disable during transitions
+      // Only show glow when fully saturated to avoid white flashes during grayscale
+      if (saturationCurve > 0.8) {
+        // Black/ADD version: 0.4 alpha (moderate glow)
+        // White/MULTIPLY version: 0.15 alpha (subtle halo)
+        const whiteGlowStrength = pg.lerp(0.4, 0.15, pg.pow(easedT, 2.0));
+        if (whiteGlowStrength > 0.05) {
+          const whiteAlpha = alpha * whiteGlowStrength;
+          drawShape(form, pg.color(0, 0, 100, whiteAlpha), pg);
+        }
       }
       
-      // Brightness smoothly interpolated - boost heavily for white phase
-      // Black/ADD: 96 (bright but controlled)
-      // White/MULTIPLY: 100 (maximum brightness to fight darkening)
-      // Extra smooth transition prevents banding
-      const brightnessT = easedT * easedT * easedT * (easedT * (easedT * 6 - 15) + 10);
-      const brightness = pg.lerp(96, 100, brightnessT);
+      // Brightness adjusted for visibility - stay dark gray during entire desaturation
+      // Use inverse of saturation to control darkness
+      let brightness;
+      if (saturationCurve < 0.7) {
+        // Desaturating or grayscale: transition to dark gray early
+        const grayMix = 1 - (saturationCurve / 0.7); // Starts darkening as soon as desaturation begins
+        const coloredBrightness = pg.lerp(96, 100, easedT);
+        const darkGray = 40; // Dark gray but not too dark (was 30 - caused black patches)
+        brightness = pg.lerp(coloredBrightness, darkGray, grayMix);
+      } else {
+        // Fully saturated colors: normal brightness
+        const brightnessT = easedT * easedT * easedT * (easedT * (easedT * 6 - 15) + 10);
+        brightness = pg.lerp(96, 100, brightnessT);
+      }
       drawShape(form, pg.color(zone_hue, saturation, brightness, alpha), pg);
       pg.pop();
     }
