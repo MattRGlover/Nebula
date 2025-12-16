@@ -36,6 +36,11 @@ let grayscaleMaxInterval = 35000; // Maximum 35 seconds between toggles
 let grayscaleDuration = 8000; // How long to stay in grayscale mode (8 seconds)
 let lastGrayscaleToggleTime = 0;
 
+// Touch gesture tracking
+let touchStartX = 0;
+let touchStartY = 0;
+let touchStartTime = 0;
+
 function setup() {
   createCanvas(windowWidth, windowHeight);
   // Lower pixel density for better performance, especially on mobile
@@ -93,6 +98,54 @@ function mousePressed() {
   // Do not reseed on every click anymore; interaction is via dashboard.
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// MOBILE TOUCH GESTURES
+// ═══════════════════════════════════════════════════════════════════════
+function touchStarted() {
+  touchStartX = mouseX;
+  touchStartY = mouseY;
+  touchStartTime = millis();
+  return false; // Prevent default
+}
+
+function touchEnded() {
+  const touchEndX = mouseX;
+  const touchEndY = mouseY;
+  const touchDuration = millis() - touchStartTime;
+  
+  const deltaX = touchEndX - touchStartX;
+  const deltaY = touchEndY - touchStartY;
+  const distance = sqrt(deltaX * deltaX + deltaY * deltaY);
+  
+  // Tap detection: small movement, short duration
+  const isTap = distance < 30 && touchDuration < 300;
+  
+  // Swipe detection: significant vertical movement
+  const isSwipe = distance > 50 && abs(deltaY) > abs(deltaX);
+  const isSwipeDown = isSwipe && deltaY > 0;
+  const isSwipeUp = isSwipe && deltaY < 0;
+  
+  if (isTap) {
+    // TAP: Spawn a new cloud at touch position
+    spawnCloudAtPosition(touchEndX, touchEndY);
+    console.log('👆 Tap detected - spawning cloud');
+  } else if (isSwipeDown) {
+    // SWIPE DOWN: Enter grayscale mode
+    if (!isGrayscaleMode) {
+      toggleGrayscaleMode();
+      console.log('👇 Swipe down - entering grayscale');
+    }
+  } else if (isSwipeUp) {
+    // SWIPE UP: Exit grayscale mode (return to color)
+    if (isGrayscaleMode) {
+      toggleGrayscaleMode();
+      console.log('👆 Swipe up - returning to color');
+    }
+  }
+  
+  return false; // Prevent default
+}
+
 function keyPressed() {
   console.log(`🔑 Key pressed: "${key}" (keyCode: ${keyCode})`);
   
@@ -121,6 +174,66 @@ function keyPressed() {
     toggleGrayscaleMode();
     return false;
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// SPAWN CLOUD AT TOUCH POSITION
+// ═══════════════════════════════════════════════════════════════════════
+function spawnCloudAtPosition(x, y) {
+  // Find next available blob ID (beyond normal 8 clouds)
+  const currentTime = millis();
+  const newBlobId = Object.keys(blobStates).length;
+  const permanentId = nextPermanentId++;
+  
+  // Generate random size
+  const baseRadius = random(BASE_UNIT * 0.10, BASE_UNIT * 0.32) * 0.9;
+  const radius = random(baseRadius * 0.6, baseRadius * 1.3);
+  
+  // Pick a random hue avoiding recent colors
+  let zone_hue;
+  let attempt = 0;
+  const maxHueAttempts = 5;
+  
+  do {
+    let hueNoise = random();
+    zone_hue = hueNoise * 360;
+    
+    const isSimilarToRecent = recentBlobHues.length >= 2 && 
+      recentBlobHues.slice(-2).every(recentHue => {
+        let diff = Math.abs(zone_hue - recentHue);
+        if (diff > 180) diff = 360 - diff;
+        return diff < 30;
+      });
+    
+    if (!isSimilarToRecent) break;
+    attempt++;
+  } while (attempt < maxHueAttempts);
+  
+  recentBlobHues.push(zone_hue);
+  if (recentBlobHues.length > 2) recentBlobHues.shift();
+  
+  // Create blob state
+  const state = {
+    permanentId: permanentId,
+    cycleIndex: 0,
+    radius: radius,
+    x: x,
+    y: y,
+    hue: zone_hue,
+    currentHue: zone_hue,
+    targetHue: zone_hue,
+    startHue: zone_hue,
+    currentSat: isGrayscaleMode ? 0 : 100,
+    targetSat: isGrayscaleMode ? 0 : 100,
+    startSat: isGrayscaleMode ? 0 : 100,
+    transitionStartTime: 0,
+    transitionDuration: 0,
+    spawnTime: currentTime // Track when manually spawned
+  };
+  
+  blobStates[newBlobId] = state;
+  
+  console.log(`✨ Spawned cloud ${permanentId} at (${Math.round(x)}, ${Math.round(y)}) - Hue: ${Math.round(zone_hue)}° Radius: ${Math.round(radius)}`);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
