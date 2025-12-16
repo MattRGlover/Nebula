@@ -40,6 +40,12 @@ let lastGrayscaleToggleTime = 0;
 let touchStartX = 0;
 let touchStartY = 0;
 let touchStartTime = 0;
+let touchPath = []; // Track touch path for gesture recognition
+let cloudSpawned = false; // Prevent multiple spawns during hold
+
+// Swipe-influenced cloud behavior
+let globalFlowBoost = 0; // Temporary flow speed boost from swipes
+let globalRotationBoost = 0; // Temporary rotation boost from circular swipes
 
 function setup() {
   createCanvas(windowWidth, windowHeight);
@@ -105,6 +111,14 @@ function touchStarted() {
   touchStartX = mouseX;
   touchStartY = mouseY;
   touchStartTime = millis();
+  touchPath = [{x: mouseX, y: mouseY, t: millis()}];
+  cloudSpawned = false;
+  return false; // Prevent default
+}
+
+function touchMoved() {
+  // Track path for gesture analysis
+  touchPath.push({x: mouseX, y: mouseY, t: millis()});
   return false; // Prevent default
 }
 
@@ -117,29 +131,30 @@ function touchEnded() {
   const deltaY = touchEndY - touchStartY;
   const distance = sqrt(deltaX * deltaX + deltaY * deltaY);
   
-  // Tap detection: small movement, short duration
-  const isTap = distance < 30 && touchDuration < 300;
-  
-  // Swipe detection: significant vertical movement
-  const isSwipe = distance > 50 && abs(deltaY) > abs(deltaX);
-  const isSwipeDown = isSwipe && deltaY > 0;
-  const isSwipeUp = isSwipe && deltaY < 0;
-  
-  if (isTap) {
-    // TAP: Spawn a new cloud at touch position
-    spawnCloudAtPosition(touchEndX, touchEndY);
-    console.log('👆 Tap detected - spawning cloud');
-  } else if (isSwipeDown) {
-    // SWIPE DOWN: Enter grayscale mode
-    if (!isGrayscaleMode) {
+  // HOLD gestures (no movement)
+  if (distance < 30) {
+    if (touchDuration >= 2000) {
+      // HOLD 2s: Toggle grayscale mode
       toggleGrayscaleMode();
-      console.log('👇 Swipe down - entering grayscale');
+      console.log('👆 Hold 2s - toggled grayscale');
+    } else if (touchDuration >= 1000) {
+      // HOLD 1s: Spawn cloud
+      spawnCloudAtPosition(touchStartX, touchStartY);
+      console.log('👆 Hold 1s - spawned cloud');
     }
-  } else if (isSwipeUp) {
-    // SWIPE UP: Exit grayscale mode (return to color)
-    if (isGrayscaleMode) {
-      toggleGrayscaleMode();
-      console.log('👆 Swipe up - returning to color');
+    return false;
+  }
+  
+  // SWIPE gestures - affect cloud movement behavior
+  if (distance > 50) {
+    const gesture = analyzeGesture(touchPath);
+    
+    if (gesture.type === 'circular') {
+      // CIRCULAR SWIPE: Boost rotation speed
+      handleCircularGesture(gesture);
+    } else if (gesture.type === 'linear') {
+      // LINEAR SWIPE: Boost flow in swipe direction
+      handleLinearGesture(gesture);
     }
   }
   
@@ -174,6 +189,95 @@ function keyPressed() {
     toggleGrayscaleMode();
     return false;
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// GESTURE ANALYSIS
+// ═══════════════════════════════════════════════════════════════════════
+function analyzeGesture(path) {
+  if (path.length < 3) {
+    return { type: 'none', direction: null, intensity: 0 };
+  }
+  
+  // Calculate total angle change to detect circular motion
+  let totalAngleChange = 0;
+  let prevAngle = null;
+  
+  for (let i = 1; i < path.length; i++) {
+    const dx = path[i].x - path[i-1].x;
+    const dy = path[i].y - path[i-1].y;
+    const angle = atan2(dy, dx);
+    
+    if (prevAngle !== null) {
+      let angleDiff = angle - prevAngle;
+      // Normalize to -PI to PI
+      while (angleDiff > PI) angleDiff -= TWO_PI;
+      while (angleDiff < -PI) angleDiff += TWO_PI;
+      totalAngleChange += angleDiff;
+    }
+    prevAngle = angle;
+  }
+  
+  // Detect circular motion (total angle change > 180 degrees)
+  const isCircular = abs(totalAngleChange) > PI;
+  
+  if (isCircular) {
+    const direction = totalAngleChange > 0 ? 'clockwise' : 'counter-clockwise';
+    const intensity = min(abs(totalAngleChange) / TWO_PI, 2.0); // 0-2 range
+    
+    console.log(`🔄 Circular gesture: ${direction}, angle: ${degrees(totalAngleChange).toFixed(1)}°, intensity: ${intensity.toFixed(2)}`);
+    
+    return {
+      type: 'circular',
+      direction: direction,
+      intensity: intensity,
+      totalAngle: totalAngleChange
+    };
+  }
+  
+  // Linear swipe analysis
+  const start = path[0];
+  const end = path[path.length - 1];
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const distance = sqrt(dx * dx + dy * dy);
+  const duration = end.t - start.t;
+  const velocity = distance / max(duration, 1); // px/ms
+  
+  // Determine primary direction
+  let direction;
+  if (abs(dy) > abs(dx)) {
+    direction = dy > 0 ? 'down' : 'up';
+  } else {
+    direction = dx > 0 ? 'right' : 'left';
+  }
+  
+  return {
+    type: 'linear',
+    direction: direction,
+    intensity: velocity * 1000, // px/s
+    distance: distance
+  };
+}
+
+function handleCircularGesture(gesture) {
+  const { direction, intensity } = gesture;
+  
+  // Boost rotation speed based on gesture
+  const rotationMultiplier = direction === 'clockwise' ? 1 : -1;
+  globalRotationBoost = intensity * rotationMultiplier * 5.0; // Decay over time
+  
+  console.log(`🌀 ${direction} swipe - rotation boost: ${globalRotationBoost.toFixed(2)}`);
+}
+
+function handleLinearGesture(gesture) {
+  const { direction, intensity } = gesture;
+  
+  // Boost flow speed and direction based on swipe
+  const velocityBoost = min(intensity / 1000, 3.0); // Normalize to 0-3 range
+  globalFlowBoost = velocityBoost;
+  
+  console.log(`↔️ ${direction} swipe - flow boost: ${globalFlowBoost.toFixed(2)}`);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -775,6 +879,10 @@ function generateWatercolorBackground(pg, time = 0) {
         additiveFade = pg.map(easedT, 0.82, 1.0, 1.0, 0.85); // Gentle fade out
       }
       baseAlpha *= additiveFade;
+      
+      // Decay global gesture boosts over time
+      globalFlowBoost *= 0.95; // Decay flow boost
+      globalRotationBoost *= 0.95; // Decay rotation boost
       
       // Saturation handling - use actualSat from color transition, not baseSat
       // This ensures grayscale mode (actualSat = 0) is fully desaturated
