@@ -43,12 +43,32 @@ let touchStartTime = 0;
 let touchPath = []; // Track touch path for gesture recognition
 let cloudSpawned = false; // Prevent multiple spawns during hold
 
-// Swipe-influenced cloud behavior
+// Swipe-influenced cloud behavior - accumulating momentum system
 let globalFlowBoost = 0; // Temporary flow speed boost from swipes
 let globalRotationBoost = 0; // Temporary rotation boost from circular swipes
+let lastSwipeDirection = null; // Track last swipe direction for accumulation
+let swipeAccumulationTime = 0; // When was the last swipe
+let lastSwipeCheckIndex = 0; // Track where we last checked for swipes
+let isDragging = false; // Track if user is currently dragging
+let lastDragTime = 0; // When was the last drag activity
+
+// 2D Water ripple simulation (based on Hugo Elias algorithm)
+let waterCols;
+let waterRows;
+let currentWater;
+let previousWater;
+let dampening = 0.96; // Faster decay to prevent spreading too far
+let lastDisturbanceX = -1;
+let lastDisturbanceY = -1;
+let maxRippleRadius = 0; // Track how far ripples should spread
+
+console.log('🚀 NEBULA_WORKING.JS LOADED AND EXECUTING');
 
 function setup() {
+  console.log('🎨 SETUP FUNCTION CALLED');
   createCanvas(windowWidth, windowHeight);
+  console.log(`📐 Canvas created: ${windowWidth}x${windowHeight}`);
+  
   // Lower pixel density for better performance, especially on mobile
   pixelDensity(1);
   BASE_UNIT = Math.min(width, height);
@@ -58,6 +78,14 @@ function setup() {
   // Start with a fade-in on first load as well
   reseedTimestamp = millis();
   startTime = millis();
+  
+  // Initialize water ripple simulation at lower resolution for performance
+  waterCols = floor(width / 8); // 1/8 resolution for better performance
+  waterRows = floor(height / 8);
+  currentWater = new Array(waterCols).fill(0).map(n => new Array(waterRows).fill(0));
+  previousWater = new Array(waterCols).fill(0).map(n => new Array(waterRows).fill(0));
+  
+  console.log('✅ SETUP COMPLETE - Click anywhere to spawn cloud');
 
   setupControls();
 }
@@ -93,6 +121,10 @@ function draw() {
     text('Render error - see console', 10, 20);
     pop();
   }
+
+  // Apply 2D water ripple simulation
+  simulateWaterRipples();
+  applyWaterDistortion();
 }
 
 function windowResized() {
@@ -101,7 +133,140 @@ function windowResized() {
 }
 
 function mousePressed() {
-  // Do not reseed on every click anymore; interaction is via dashboard.
+  touchStartX = mouseX;
+  touchStartY = mouseY;
+  touchStartTime = millis();
+  touchPath = [{x: mouseX, y: mouseY, t: millis()}];
+  cloudSpawned = false;
+  lastSwipeCheckIndex = 0; // Reset swipe detection for new touch
+  isDragging = true; // Start tracking drag
+  lastDragTime = millis();
+  
+  // Create water ripple disturbance
+  addWaterDisturbance(mouseX, mouseY);
+  
+  console.log(`🖱️ Mouse pressed at (${mouseX}, ${mouseY})`);
+  return false;
+}
+
+function mouseDragged() {
+  // Track mouse path for gesture analysis
+  touchPath.push({x: mouseX, y: mouseY, t: millis()});
+  lastDragTime = millis(); // Update last drag activity time
+  
+  // No longer detecting swipes during drag - will calculate once on release
+  
+  return false;
+}
+
+function mouseReleased() {
+  const mouseEndX = mouseX;
+  const mouseEndY = mouseY;
+  const mouseDuration = millis() - touchStartTime;
+  
+  const deltaX = mouseEndX - touchStartX;
+  const deltaY = mouseEndY - touchStartY;
+  const distance = sqrt(deltaX * deltaX + deltaY * deltaY);
+  
+  console.log(`🖱️ Mouse released - Duration: ${mouseDuration}ms, Distance: ${distance.toFixed(1)}px`);
+  
+  // HOLD gestures (no movement)
+  if (distance < 30) {
+    console.log(`🖱️ HOLD DETECTED: ${mouseDuration}ms at (${touchStartX}, ${touchStartY})`);
+    if (mouseDuration >= 5000) {
+      // HOLD 5s: Toggle grayscale mode
+      toggleGrayscaleMode();
+      console.log('🖱️ ✅ Hold 5s - toggled grayscale');
+    } else if (mouseDuration >= 500) {
+      // HOLD 500ms: Spawn cloud
+      console.log(`🎯 Calling spawnCloudAtPosition(${touchStartX}, ${touchStartY})`);
+      spawnCloudAtPosition(touchStartX, touchStartY);
+      console.log('🖱️ ✅ Hold 500ms - spawn complete');
+    } else {
+      console.log(`⏱️ Hold too short: ${mouseDuration}ms (need 500ms for spawn, 5000ms for grayscale)`);
+    }
+    return false;
+  }
+  
+  // Mark drag as ended
+  isDragging = false;
+  
+  // Calculate velocity-based momentum from entire drag gesture
+  if (distance > 10 && mouseDuration > 0) {
+    const velocity = distance / mouseDuration; // px/ms
+    
+    const horizontalStrength = abs(deltaX) / distance;
+    const verticalStrength = abs(deltaY) / distance;
+    
+    if (horizontalStrength > verticalStrength) {
+      // Horizontal drag - affects rotation
+      const direction = deltaX > 0 ? 1 : -1;
+      const velocityScale = constrain(velocity / 0.5, 0.1, 5.0);
+      const momentumChange = direction * 3.0 * velocityScale;
+      
+      // Get current average momentum across all clouds
+      let avgCurrentMomentum = 0;
+      let cloudCount = 0;
+      for (let blobId in blobStates) {
+        avgCurrentMomentum += blobStates[blobId].targetRotation || 0;
+        cloudCount++;
+      }
+      avgCurrentMomentum = cloudCount > 0 ? avgCurrentMomentum / cloudCount : 0;
+      
+      // Check if drag opposes current momentum
+      if ((avgCurrentMomentum > 0.5 && momentumChange < 0) || (avgCurrentMomentum < -0.5 && momentumChange > 0)) {
+        // Opposing direction - slow down toward 0 instead of reversing
+        globalRotationBoost = momentumChange;
+        console.log(`🛑 BRAKING: current=${avgCurrentMomentum.toFixed(1)}, brake force=${globalRotationBoost.toFixed(1)}`);
+      } else {
+        // Same direction or near 0 - add momentum normally
+        globalRotationBoost = momentumChange;
+        console.log(`🔄 Horizontal drag: velocity=${velocity.toFixed(2)} px/ms, momentum=${globalRotationBoost.toFixed(1)}`);
+      }
+    } else {
+      // Vertical drag - affects drift/flow
+      const direction = deltaY < 0 ? 1 : -1;
+      const velocityScale = constrain(velocity / 0.5, 0.1, 5.0);
+      const momentumChange = direction * 3.0 * velocityScale;
+      
+      // Get current average drift across all clouds
+      let avgCurrentDrift = 0;
+      let cloudCount = 0;
+      for (let blobId in blobStates) {
+        avgCurrentDrift += blobStates[blobId].targetDrift || 0;
+        cloudCount++;
+      }
+      avgCurrentDrift = cloudCount > 0 ? avgCurrentDrift / cloudCount : 0;
+      
+      // Check if drag opposes current drift
+      if ((avgCurrentDrift > 0.00005 && momentumChange < 0) || (avgCurrentDrift < -0.00005 && momentumChange > 0)) {
+        // Opposing direction - slow down toward 0
+        globalFlowBoost = momentumChange;
+        console.log(`🛑 DRIFT BRAKE: current=${avgCurrentDrift.toFixed(5)}, brake force=${globalFlowBoost.toFixed(1)}`);
+      } else {
+        // Same direction or near 0 - add normally
+        globalFlowBoost = momentumChange;
+        console.log(`⬆️ Vertical drag: velocity=${velocity.toFixed(2)} px/ms, momentum=${globalFlowBoost.toFixed(1)}`);
+      }
+    }
+  }
+  
+  // Set target momentum for all clouds to lerp toward gradually (no jumps)
+  if (globalRotationBoost !== 0 || globalFlowBoost !== 0) {
+    for (let blobId in blobStates) {
+      const state = blobStates[blobId];
+      state.targetRotation = state.accumulatedRotation + globalRotationBoost;
+      state.targetDrift = state.accumulatedDrift + (globalFlowBoost * 0.00001);
+      blobStates[blobId] = state;
+    }
+    console.log(`✅ Applied momentum: rotation=${globalRotationBoost.toFixed(1)}, drift=${globalFlowBoost.toFixed(1)}`);
+    
+    // Clear global boosts after setting targets
+    globalRotationBoost = 0;
+    globalFlowBoost = 0;
+  }
+  
+  return false;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -113,12 +278,23 @@ function touchStarted() {
   touchStartTime = millis();
   touchPath = [{x: mouseX, y: mouseY, t: millis()}];
   cloudSpawned = false;
+  lastSwipeCheckIndex = 0; // Reset swipe detection for new touch
+  isDragging = true; // Start tracking drag
+  lastDragTime = millis();
+  
+  // Create water ripple disturbance
+  addWaterDisturbance(mouseX, mouseY);
+  
   return false; // Prevent default
 }
 
 function touchMoved() {
   // Track path for gesture analysis
   touchPath.push({x: mouseX, y: mouseY, t: millis()});
+  lastDragTime = millis(); // Update last drag activity time
+  
+  // No longer detecting swipes during drag - will calculate once on release
+  
   return false; // Prevent default
 }
 
@@ -131,31 +307,102 @@ function touchEnded() {
   const deltaY = touchEndY - touchStartY;
   const distance = sqrt(deltaX * deltaX + deltaY * deltaY);
   
+  console.log(`📱 Touch ended - Duration: ${touchDuration}ms, Distance: ${distance.toFixed(1)}px`);
+  
   // HOLD gestures (no movement)
   if (distance < 30) {
-    if (touchDuration >= 2000) {
-      // HOLD 2s: Toggle grayscale mode
+    console.log(`📱 HOLD DETECTED: ${touchDuration}ms at (${touchStartX}, ${touchStartY})`);
+    if (touchDuration >= 5000) {
+      // HOLD 5s: Toggle grayscale mode
       toggleGrayscaleMode();
-      console.log('👆 Hold 2s - toggled grayscale');
-    } else if (touchDuration >= 1000) {
-      // HOLD 1s: Spawn cloud
+      console.log('👆 ✅ Hold 5s - toggled grayscale');
+    } else if (touchDuration >= 500) {
+      // HOLD 500ms: Spawn cloud
+      console.log(`🎯 Calling spawnCloudAtPosition(${touchStartX}, ${touchStartY})`);
       spawnCloudAtPosition(touchStartX, touchStartY);
-      console.log('👆 Hold 1s - spawned cloud');
+      console.log('👆 ✅ Hold 500ms - spawn complete');
+    } else {
+      console.log(`⏱️ Hold too short: ${touchDuration}ms (need 500ms for spawn, 5000ms for grayscale)`);
     }
     return false;
   }
   
-  // SWIPE gestures - affect cloud movement behavior
-  if (distance > 50) {
-    const gesture = analyzeGesture(touchPath);
+  // Mark drag as ended
+  isDragging = false;
+  
+  // Calculate velocity-based momentum from entire drag gesture
+  if (distance > 10 && touchDuration > 0) {
+    const velocity = distance / touchDuration; // px/ms
     
-    if (gesture.type === 'circular') {
-      // CIRCULAR SWIPE: Boost rotation speed
-      handleCircularGesture(gesture);
-    } else if (gesture.type === 'linear') {
-      // LINEAR SWIPE: Boost flow in swipe direction
-      handleLinearGesture(gesture);
+    const horizontalStrength = abs(deltaX) / distance;
+    const verticalStrength = abs(deltaY) / distance;
+    
+    if (horizontalStrength > verticalStrength) {
+      // Horizontal drag - affects rotation
+      const direction = deltaX > 0 ? 1 : -1;
+      const velocityScale = constrain(velocity / 0.5, 0.1, 5.0);
+      const momentumChange = direction * 3.0 * velocityScale;
+      
+      // Get current average momentum across all clouds
+      let avgCurrentMomentum = 0;
+      let cloudCount = 0;
+      for (let blobId in blobStates) {
+        avgCurrentMomentum += blobStates[blobId].targetRotation || 0;
+        cloudCount++;
+      }
+      avgCurrentMomentum = cloudCount > 0 ? avgCurrentMomentum / cloudCount : 0;
+      
+      // Check if drag opposes current momentum
+      if ((avgCurrentMomentum > 0.5 && momentumChange < 0) || (avgCurrentMomentum < -0.5 && momentumChange > 0)) {
+        // Opposing direction - slow down toward 0 instead of reversing
+        globalRotationBoost = momentumChange;
+        console.log(`🛑 BRAKING: current=${avgCurrentMomentum.toFixed(1)}, brake force=${globalRotationBoost.toFixed(1)}`);
+      } else {
+        // Same direction or near 0 - add momentum normally
+        globalRotationBoost = momentumChange;
+        console.log(`🔄 Horizontal drag: velocity=${velocity.toFixed(2)} px/ms, momentum=${globalRotationBoost.toFixed(1)}`);
+      }
+    } else {
+      // Vertical drag - affects drift/flow
+      const direction = deltaY < 0 ? 1 : -1;
+      const velocityScale = constrain(velocity / 0.5, 0.1, 5.0);
+      const momentumChange = direction * 3.0 * velocityScale;
+      
+      // Get current average drift across all clouds
+      let avgCurrentDrift = 0;
+      let cloudCount = 0;
+      for (let blobId in blobStates) {
+        avgCurrentDrift += blobStates[blobId].targetDrift || 0;
+        cloudCount++;
+      }
+      avgCurrentDrift = cloudCount > 0 ? avgCurrentDrift / cloudCount : 0;
+      
+      // Check if drag opposes current drift
+      if ((avgCurrentDrift > 0.00005 && momentumChange < 0) || (avgCurrentDrift < -0.00005 && momentumChange > 0)) {
+        // Opposing direction - slow down toward 0
+        globalFlowBoost = momentumChange;
+        console.log(`🛑 DRIFT BRAKE: current=${avgCurrentDrift.toFixed(5)}, brake force=${globalFlowBoost.toFixed(1)}`);
+      } else {
+        // Same direction or near 0 - add normally
+        globalFlowBoost = momentumChange;
+        console.log(`⬆️ Vertical drag: velocity=${velocity.toFixed(2)} px/ms, momentum=${globalFlowBoost.toFixed(1)}`);
+      }
     }
+  }
+  
+  // Set target momentum for all clouds to lerp toward gradually (no jumps)
+  if (globalRotationBoost !== 0 || globalFlowBoost !== 0) {
+    for (let blobId in blobStates) {
+      const state = blobStates[blobId];
+      state.targetRotation = state.accumulatedRotation + globalRotationBoost;
+      state.targetDrift = state.accumulatedDrift + (globalFlowBoost * 0.00001);
+      blobStates[blobId] = state;
+    }
+    console.log(`✅ Applied momentum: rotation=${globalRotationBoost.toFixed(1)}, drift=${globalFlowBoost.toFixed(1)}`);
+    
+    // Clear global boosts after setting targets
+    globalRotationBoost = 0;
+    globalFlowBoost = 0;
   }
   
   return false; // Prevent default
@@ -189,6 +436,93 @@ function keyPressed() {
     toggleGrayscaleMode();
     return false;
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// SWIPE ACCUMULATION SYSTEM - Like cranking a handle
+// ═══════════════════════════════════════════════════════════════════════
+function applyDragEffects() {
+  // Look for completed swipe gestures in the touch path
+  // Multiple swipes in same direction accumulate momentum
+  
+  if (touchPath.length < lastSwipeCheckIndex + 5) return; // Reduced from 8 to 5 for more responsive detection
+  
+  // Check recent segment for a swipe
+  const checkStart = max(lastSwipeCheckIndex, touchPath.length - 12);
+  const segmentPath = touchPath.slice(checkStart);
+  
+  if (segmentPath.length < 3) return; // Reduced from 5 to 3
+  
+  const start = segmentPath[0];
+  const end = segmentPath[segmentPath.length - 1];
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const distance = sqrt(dx * dx + dy * dy);
+  const duration = end.t - start.t;
+  
+  // Detect if this is a distinct swipe gesture (minimum distance and velocity)
+  if (distance < 25 || duration === 0) return; // Reduced from 40 to 25 for easier detection
+  
+  const velocity = distance / duration; // px/ms
+  if (velocity < 0.3) return; // Reduced from 0.5 to 0.3 for slower swipes
+  
+  // Determine swipe direction
+  let swipeDirection;
+  const horizontalStrength = abs(dx) / distance;
+  const verticalStrength = abs(dy) / distance;
+  
+  if (horizontalStrength > verticalStrength) {
+    // Horizontal swipe
+    swipeDirection = dx > 0 ? 'right' : 'left';
+    
+    // Accumulate rotation momentum
+    const currentTime = millis();
+    const timeSinceLastSwipe = currentTime - swipeAccumulationTime;
+    
+    // Each swipe adds 10% of the speed range (base range is -15 to 15, so 10% = 3.0 deg/sec)
+    const swipePower = 3.0; // 10% increase per swipe
+    
+    // If same direction within 800ms, accumulate momentum
+    if ((lastSwipeDirection === swipeDirection) && (timeSinceLastSwipe < 800)) {
+      // ACCUMULATE: Each swipe in same direction adds more momentum
+      globalRotationBoost += (dx > 0 ? 1 : -1) * swipePower;
+      console.log(`🔄 ${swipeDirection.toUpperCase()} swipe - momentum: ${globalRotationBoost.toFixed(1)}`);
+    } else {
+      // RESET: New direction, start fresh
+      globalRotationBoost = (dx > 0 ? 1 : -1) * swipePower;
+      console.log(`🔄 ${swipeDirection.toUpperCase()} swipe - starting momentum: ${globalRotationBoost.toFixed(1)}`);
+    }
+    
+    lastSwipeDirection = swipeDirection;
+    swipeAccumulationTime = currentTime;
+  } else {
+    // Vertical swipe
+    swipeDirection = dy < 0 ? 'up' : 'down';
+    
+    // Accumulate drift/flow momentum
+    const currentTime = millis();
+    const timeSinceLastSwipe = currentTime - swipeAccumulationTime;
+    
+    // Each swipe adds significant drift change to make UP/DOWN drags more impactful
+    const swipePower = 3.0; // Strong increase per swipe to see visible drift/dance changes
+    
+    // If same direction within 800ms, accumulate momentum
+    if ((lastSwipeDirection === swipeDirection) && (timeSinceLastSwipe < 800)) {
+      // ACCUMULATE: Each swipe in same direction adds more momentum
+      globalFlowBoost += (dy < 0 ? 1 : -1) * swipePower;
+      console.log(`⬆️ ${swipeDirection.toUpperCase()} swipe - momentum: ${globalFlowBoost.toFixed(1)}`);
+    } else {
+      // RESET: New direction, start fresh
+      globalFlowBoost = (dy < 0 ? 1 : -1) * swipePower;
+      console.log(`⬆️ ${swipeDirection.toUpperCase()} swipe - starting momentum: ${globalFlowBoost.toFixed(1)}`);
+    }
+    
+    lastSwipeDirection = swipeDirection;
+    swipeAccumulationTime = currentTime;
+  }
+  
+  // Mark this position as checked
+  lastSwipeCheckIndex = touchPath.length - 3;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -271,50 +605,123 @@ function handleCircularGesture(gesture) {
 }
 
 function handleLinearGesture(gesture) {
-  const { direction, intensity } = gesture;
+  const { direction, intensity, distance } = gesture;
   
-  // Boost flow speed and direction based on swipe
-  const velocityBoost = min(intensity / 1000, 3.0); // Normalize to 0-3 range
-  globalFlowBoost = velocityBoost;
+  // Get detailed swipe vector from touchPath
+  const start = touchPath[0];
+  const end = touchPath[touchPath.length - 1];
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
   
-  console.log(`↔️ ${direction} swipe - flow boost: ${globalFlowBoost.toFixed(2)}`);
+  // Horizontal component controls rotation (left→right = clockwise, right→left = counter-clockwise)
+  const horizontalStrength = abs(dx) / distance; // 0-1
+  if (horizontalStrength > 0.3) { // Significant horizontal component
+    const rotationDirection = dx > 0 ? 1 : -1; // Right = clockwise, Left = counter-clockwise
+    const rotationMagnitude = min(distance / 500, 3.0); // Scale by swipe distance
+    globalRotationBoost = rotationDirection * rotationMagnitude * 5.0;
+    console.log(`🔄 ${dx > 0 ? 'Clockwise' : 'Counter-clockwise'} rotation: ${globalRotationBoost.toFixed(2)}`);
+  }
+  
+  // Vertical component controls speed/drift (up = faster/more drift, down = slower/stiller)
+  const verticalStrength = abs(dy) / distance; // 0-1
+  if (verticalStrength > 0.3) { // Significant vertical component
+    if (dy < 0) {
+      // Swipe UP: Increase speed and drift
+      const speedBoost = min(abs(dy) / 200, 3.0);
+      globalFlowBoost = speedBoost;
+      console.log(`⬆️ Speed UP: flow boost ${globalFlowBoost.toFixed(2)}`);
+    } else {
+      // Swipe DOWN: Decrease speed (make stiller)
+      const speedReduce = -min(dy / 200, 2.0);
+      globalFlowBoost = speedReduce;
+      console.log(`⬇️ Speed DOWN: flow reduce ${globalFlowBoost.toFixed(2)}`);
+    }
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
 // SPAWN CLOUD AT TOUCH POSITION
 // ═══════════════════════════════════════════════════════════════════════
 function spawnCloudAtPosition(x, y) {
-  // Find next available blob ID (beyond normal 8 clouds)
   const currentTime = millis();
-  const newBlobId = Object.keys(blobStates).length;
+  
+  // Find oldest cloud to replace (one furthest in its lifecycle)
+  let oldestBlobId = 0;
+  let maxLifeProgress = -1;
+  
+  // Cloud lifecycle constants (match generateWatercolorBackground)
+  const assembleDur = 9000;
+  const sustainDur = 20000;
+  const fadeDur = 7000;
+  const totalLife = assembleDur + sustainDur + fadeDur;
+  const spawnInt = 7000;
+  
+  for (let i = 0; i < 8; i++) {
+    const state = blobStates[i];
+    if (state && state.spawnTime !== undefined) {
+      // This is a manually spawned cloud - check its age
+      const age = currentTime - state.spawnTime;
+      const lifeProgress = age / totalLife;
+      
+      // Strongly prefer clouds in fade phase (80%+) for smooth overlap
+      const fadePriority = lifeProgress > 0.8 ? lifeProgress + 10 : lifeProgress;
+      if (fadePriority > maxLifeProgress) {
+        maxLifeProgress = fadePriority;
+        oldestBlobId = i;
+      }
+    } else if (state) {
+      // This is an automatic cloud - check cycle index and time
+      const spawnOffset = i * spawnInt;
+      const timeSinceStart = (currentTime - reseedTimestamp) - spawnOffset;
+      const cycleIndex = Math.floor(timeSinceStart / totalLife);
+      const lifeTime = timeSinceStart - cycleIndex * totalLife;
+      const lifeProgress = lifeTime / totalLife;
+      
+      // Strongly prefer clouds in fade phase (80%+) for smooth overlap
+      const fadePriority = lifeProgress > 0.8 ? lifeProgress + 10 + cycleIndex : lifeProgress;
+      if (fadePriority > maxLifeProgress) {
+        maxLifeProgress = fadePriority;
+        oldestBlobId = i;
+      }
+    }
+  }
+  
+  const newBlobId = oldestBlobId;
   const permanentId = nextPermanentId++;
   
-  // Generate random size
-  const baseRadius = random(BASE_UNIT * 0.10, BASE_UNIT * 0.32) * 0.9;
-  const radius = random(baseRadius * 0.6, baseRadius * 1.3);
+  console.log(`🔄 Replacing blob ${newBlobId} (lifecycle ${maxLifeProgress.toFixed(2)})`);
   
-  // Pick a random hue avoiding recent colors
+  // Generate random size with WIDE variety (no size reduction multiplier)
+  const baseRadius = random(BASE_UNIT * 0.10, BASE_UNIT * 0.32);
+  // Add more variation: 0.5x to 1.5x for dramatic size differences
+  const radius = random(baseRadius * 0.5, baseRadius * 1.5);
+  
+  // Pick a random hue avoiding the last spawned color
   let zone_hue;
   let attempt = 0;
-  const maxHueAttempts = 5;
+  const maxHueAttempts = 10;
+  const minHueDifference = 60; // Minimum 60° difference from last spawned
   
   do {
     let hueNoise = random();
     zone_hue = hueNoise * 360;
     
-    const isSimilarToRecent = recentBlobHues.length >= 2 && 
-      recentBlobHues.slice(-2).every(recentHue => {
-        let diff = Math.abs(zone_hue - recentHue);
-        if (diff > 180) diff = 360 - diff;
-        return diff < 30;
-      });
+    // Check if different enough from last spawned cloud
+    const isSimilarToLast = recentBlobHues.length > 0 && (() => {
+      const lastHue = recentBlobHues[recentBlobHues.length - 1];
+      let diff = Math.abs(zone_hue - lastHue);
+      if (diff > 180) diff = 360 - diff;
+      return diff < minHueDifference;
+    })();
     
-    if (!isSimilarToRecent) break;
+    if (!isSimilarToLast) break;
     attempt++;
   } while (attempt < maxHueAttempts);
   
   recentBlobHues.push(zone_hue);
-  if (recentBlobHues.length > 2) recentBlobHues.shift();
+  if (recentBlobHues.length > 3) recentBlobHues.shift();
+  
+  console.log(`🎨 New cloud hue: ${Math.round(zone_hue)}° (${recentBlobHues.length > 1 ? 'different from last: ' + Math.round(recentBlobHues[recentBlobHues.length - 2]) + '°' : 'first spawn'})`);
   
   // Create blob state
   const state = {
@@ -335,9 +742,16 @@ function spawnCloudAtPosition(x, y) {
     spawnTime: currentTime // Track when manually spawned
   };
   
+  // Mark as manually spawned with fresh lifecycle
+  state.spawnTime = currentTime;
+  state.cycleIndex = 0; // Reset to first cycle
+  
   blobStates[newBlobId] = state;
   
-  console.log(`✨ Spawned cloud ${permanentId} at (${Math.round(x)}, ${Math.round(y)}) - Hue: ${Math.round(zone_hue)}° Radius: ${Math.round(radius)}`);
+  console.log(`✨ SPAWNED CLOUD ${permanentId} at blob slot ${newBlobId}`);
+  console.log(`   Position: (${Math.round(x)}, ${Math.round(y)})`);
+  console.log(`   Hue: ${Math.round(zone_hue)}°, Radius: ${Math.round(radius)}`);
+  console.log(`   State saved:`, state);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -413,6 +827,10 @@ function generateWatercolorBackground(pg, time = 0) {
   pg.colorMode(HSB, 360, 100, 100, 100);
   pg.angleMode(DEGREES);
 
+  // Time tracking for cloud lifecycle
+  const currentElapsed = time;
+  const rawElapsedSinceReseed = currentElapsed - reseedTimestamp;
+
   // Calculate transition factor (0 = black, 1 = white)
   // Loop through full cycle: black → to white → white → to black
   const elapsed = (time - startTime) % FULL_CYCLE;
@@ -438,7 +856,6 @@ function generateWatercolorBackground(pg, time = 0) {
 
   // Lock global evolution speed to real time (no globalTime scaling)
   const absoluteScaled = time; // ms since start
-  const rawElapsedSinceReseed = reseedTimestamp > 0 ? (time - reseedTimestamp) : time;
   const reseedElapsedScaled = rawElapsedSinceReseed;
 
   pg.blendMode(pg.BLEND);
@@ -512,15 +929,28 @@ function generateWatercolorBackground(pg, time = 0) {
   for (let i = 0; i < numSplotches; i++) {
     const blobId = i; // stable index per blob
 
-    // Per-blob spawn timing and life-cycle index so that each time a blob
-    // loops through its life, it can appear in a new place.
-    const spawnOffset   = i * spawnInterval;
-    const timeSinceStart = rawElapsedSinceReseed - spawnOffset;
-    const cycleIndex = timeSinceStart <= 0 ? 0 : Math.floor(timeSinceStart / totalLife);
-
     // Retrieve or initialize persistent state for this blob and life cycle.
     const prevState = blobStates[blobId] || { visible: 0, cycleIndex: -1 };
     let state = prevState;
+
+    // Per-blob spawn timing and life-cycle index
+    let timeSinceStart, cycleIndex;
+    
+    // Check if this is a manually spawned cloud
+    if (state.spawnTime !== undefined) {
+      // Manually spawned: calculate time from spawn timestamp
+      timeSinceStart = currentElapsed - (state.spawnTime - reseedTimestamp);
+      cycleIndex = 0; // Manual clouds only live one cycle
+      
+      if (i === 0 || (state.spawnTime && (currentElapsed - (state.spawnTime - reseedTimestamp)) < 2000)) {
+        console.log(`🔍 Blob ${i} (manual): timeSinceStart=${timeSinceStart.toFixed(0)}ms, spawnTime=${state.spawnTime}, reseedTimestamp=${reseedTimestamp}`);
+      }
+    } else {
+      // Automatic cloud: use spawn interval
+      const spawnOffset = i * spawnInterval;
+      timeSinceStart = rawElapsedSinceReseed - spawnOffset;
+      cycleIndex = timeSinceStart <= 0 ? 0 : Math.floor(timeSinceStart / totalLife);
+    }
 
     // Assign permanent unique ID on first creation
     if (state.permanentId === undefined) {
@@ -538,6 +968,20 @@ function generateWatercolorBackground(pg, time = 0) {
       state.startSat = 100;
       state.transitionStartTime = 0;
       state.transitionDuration = 0;
+    }
+    
+    // Initialize permanent rotation and drift momentum (accumulated from swipes)
+    if (state.accumulatedRotation === undefined) {
+      state.accumulatedRotation = 0; // Permanent rotation velocity added from swipes
+    }
+    if (state.accumulatedDrift === undefined) {
+      state.accumulatedDrift = 0; // Permanent drift velocity added from swipes
+    }
+    if (state.targetRotation === undefined) {
+      state.targetRotation = 0; // Target rotation to lerp toward
+    }
+    if (state.targetDrift === undefined) {
+      state.targetDrift = 0; // Target drift to lerp toward
     }
 
     // Stable per-blob hue (no time component) so each splotch keeps a
@@ -606,7 +1050,10 @@ function generateWatercolorBackground(pg, time = 0) {
 
     // When we enter a new life cycle, choose a new radius and center once,
     // and then reuse them every frame so the blob doesn't drift mid-life.
-    if (state.cycleIndex !== cycleIndex) {
+    // For manually spawned clouds, respect their preset position/radius
+    const isManuallySpawned = state.spawnTime !== undefined && state.x !== undefined;
+    
+    if (state.cycleIndex !== cycleIndex && !isManuallySpawned) {
       // Blob size varies independently per blob with WIDE variation
       // Range from small accent clouds to large dominant washes
       let baseRadius = pg.random(BASE_UNIT * 0.10, BASE_UNIT * 0.32) * 0.9;
@@ -751,12 +1198,40 @@ function generateWatercolorBackground(pg, time = 0) {
     const t = absoluteScaled * 0.0005; // global time in seconds-ish
 
     // Unique spin speed and direction per splotch - increased for more rotation
-    const spinSpeed = pg.map(pg.noise(i * 0.7), 0, 1, -15, 15); // deg/sec - increased from -6,6
+    // Apply accumulated rotation from swipes - each cloud maintains its own momentum
+    const baseSpinSpeed = pg.map(pg.noise(i * 0.7), 0, 1, -15, 15); // deg/sec
+    
+    // If not dragging, decay target momentum back to 0 (natural state)
+    // Wait 5 seconds after drag stops, then decay at moderate pace
+    if (!isDragging && (millis() - lastDragTime > 5000)) {
+      state.targetRotation = pg.lerp(state.targetRotation, 0, 0.01); // Decay ~10 seconds to baseline
+    }
+    
+    // Gradually lerp accumulated momentum toward target (very slow, no visible jumps)
+    state.accumulatedRotation = pg.lerp(state.accumulatedRotation, state.targetRotation, 0.02);
+    blobStates[blobId] = state;
+    
+    const spinSpeed = baseSpinSpeed + state.accumulatedRotation;
     const splotchAngle = t * spinSpeed + i * 20;
 
     // Add organic drift/flow for traveling blobs
-    const flowSpeed = 0.00003; // Very slow for wide, gradual cycles
-    const flowScale = BASE_UNIT * 0.25; // Drift up to 25% of screen size - blobs actually travel
+    // If not dragging, decay target drift back to 0 (natural state)
+    // Wait 5 seconds after drag stops, then decay at moderate pace
+    if (!isDragging && (millis() - lastDragTime > 5000)) {
+      state.targetDrift = pg.lerp(state.targetDrift, 0, 0.01); // Decay ~10 seconds to baseline
+    }
+    
+    // Gradually lerp accumulated drift toward target (very slow, no visible jumps)
+    state.accumulatedDrift = pg.lerp(state.accumulatedDrift, state.targetDrift, 0.02);
+    blobStates[blobId] = state;
+    
+    // Calculate drift multiplier from accumulated drift (positive = more chaotic, negative = more stagnant)
+    const driftMultiplier = 1.0 + (state.accumulatedDrift * 1000); // Scale up the effect
+    const clampedMultiplier = pg.constrain(driftMultiplier, 0.1, 5.0); // Range from 10% (stagnant) to 500% (chaotic)
+    
+    const baseFlowSpeed = 0.00003; // Very slow for wide, gradual cycles
+    const flowSpeed = baseFlowSpeed * clampedMultiplier; // Speed affected by drift
+    const flowScale = BASE_UNIT * 0.25 * clampedMultiplier; // Scale affected by drift - more movement!
     const driftX = (pg.noise(i * 0.53, absoluteScaled * flowSpeed) - 0.5) * 2 * flowScale;
     const driftY = (pg.noise(i * 0.53 + 100, absoluteScaled * flowSpeed) - 0.5) * 2 * flowScale;
 
@@ -879,10 +1354,6 @@ function generateWatercolorBackground(pg, time = 0) {
         additiveFade = pg.map(easedT, 0.82, 1.0, 1.0, 0.85); // Gentle fade out
       }
       baseAlpha *= additiveFade;
-      
-      // Decay global gesture boosts over time
-      globalFlowBoost *= 0.95; // Decay flow boost
-      globalRotationBoost *= 0.95; // Decay rotation boost
       
       // Saturation handling - use actualSat from color transition, not baseSat
       // This ensures grayscale mode (actualSat = 0) is fully desaturated
@@ -1023,6 +1494,10 @@ function generateWatercolorBackground(pg, time = 0) {
     }
     pg.pop();
   }
+  
+  // Global boosts are NOT cleared here - they accumulate during drag
+  // and are applied to all clouds on mouse/touch release
+  
   pg.pop();
 }
 
@@ -1072,4 +1547,114 @@ function drawShape(points, col, pg) {
   }
   pg.endShape(CLOSE);
   pg.pop();
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 2D WATER RIPPLE SIMULATION
+// Based on Hugo Elias algorithm
+// ═══════════════════════════════════════════════════════════════════════
+
+function addWaterDisturbance(x, y) {
+  // Convert screen coordinates to water grid coordinates
+  const waterX = floor(x / 8);
+  const waterY = floor(y / 8);
+  
+  // Track disturbance location and set max spread radius
+  lastDisturbanceX = waterX;
+  lastDisturbanceY = waterY;
+  maxRippleRadius = min(waterCols, waterRows) * 0.25; // Ripples spread to 25% of grid size
+  
+  // Add disturbance in a small radius (like a finger press)
+  const radius = 3; // Smaller radius for coarser grid
+  for (let i = -radius; i <= radius; i++) {
+    for (let j = -radius; j <= radius; j++) {
+      const wx = waterX + i;
+      const wy = waterY + j;
+      if (wx > 0 && wx < waterCols - 1 && wy > 0 && wy < waterRows - 1) {
+        const dist = sqrt(i * i + j * j);
+        if (dist <= radius) {
+          // Stronger in center, weaker at edges
+          const strength = (1 - dist / radius) * 1500;
+          previousWater[wx][wy] = strength;
+        }
+      }
+    }
+  }
+}
+
+function simulateWaterRipples() {
+  // Hugo Elias water ripple algorithm
+  for (let i = 1; i < waterCols - 1; i++) {
+    for (let j = 1; j < waterRows - 1; j++) {
+      // Calculate distance from disturbance origin
+      if (lastDisturbanceX >= 0 && lastDisturbanceY >= 0) {
+        const dx = i - lastDisturbanceX;
+        const dy = j - lastDisturbanceY;
+        const distFromOrigin = sqrt(dx * dx + dy * dy);
+        
+        // If beyond max radius, dampen heavily to stop spread
+        if (distFromOrigin > maxRippleRadius) {
+          currentWater[i][j] *= 0.8; // Heavy dampening outside radius
+          previousWater[i][j] *= 0.8;
+          continue;
+        }
+      }
+      
+      currentWater[i][j] =
+        (previousWater[i - 1][j] +
+          previousWater[i + 1][j] +
+          previousWater[i][j - 1] +
+          previousWater[i][j + 1]) / 2 -
+        currentWater[i][j];
+      currentWater[i][j] = currentWater[i][j] * dampening;
+    }
+  }
+  
+  // Swap buffers
+  let temp = previousWater;
+  previousWater = currentWater;
+  currentWater = temp;
+}
+
+function applyWaterDistortion() {
+  // Render the water ripples as subtle highlight/shadow distortion with smooth gradients
+  push();
+  noStroke();
+  
+  // Render all cells for smooth appearance
+  for (let i = 1; i < waterCols - 1; i++) {
+    for (let j = 1; j < waterRows - 1; j++) {
+      const waterValue = currentWater[i][j];
+      
+      if (abs(waterValue) > 2) { // Only render significant values
+        // Convert water grid position back to screen coordinates
+        const x = i * 8;
+        const y = j * 8;
+        
+        // Interpolate with neighboring cells for smoother gradients
+        const avgValue = (waterValue + 
+                         currentWater[i-1][j] + 
+                         currentWater[i+1][j] + 
+                         currentWater[i][j-1] + 
+                         currentWater[i][j+1]) / 5;
+        
+        // Water value represents displacement - positive is raised, negative is lowered
+        // Create subtle highlight for positive (raised), shadow for negative (lowered)
+        const intensity = constrain(abs(avgValue) * 0.035, 0, 12); // Subtle
+        
+        if (avgValue > 0) {
+          // Raised area: white highlight with soft edges
+          fill(255, 255, 255, intensity);
+        } else {
+          // Lowered area: dark shadow with soft edges
+          fill(0, 0, 0, intensity);
+        }
+        
+        // Draw soft ellipse for each water cell for smoother appearance
+        ellipse(x + 4, y + 4, 12, 12);
+      }
+    }
+  }
+  
+  pop();
 }
