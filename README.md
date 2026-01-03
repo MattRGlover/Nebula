@@ -1,10 +1,17 @@
 # Generative Nebula Clouds
 
-A mesmerizing generative art piece featuring continuously evolving nebula-like blobs inspired by Malibu sunsets. The artwork features an infinite loop transitioning between additive light (black background) and subtractive paint (white background) modes, creating two distinct visual experiences in one seamless animation.
+A mesmerizing interactive generative art piece featuring continuously evolving nebula-like clouds inspired by Malibu sunsets. The artwork features an infinite loop transitioning between additive light (black background) and subtractive paint (white background) modes, with touch/mouse gesture controls for dynamic interaction.
 
 🌐 **Live Demo**: [https://mattRGlover.github.io/Nebula/](https://mattRGlover.github.io/Nebula/)
 
 ## ✨ Features
+
+### Interactive Gesture System
+- **Linear Gestures**: Drag to kick clouds in any direction with momentum-based physics
+- **Circular Gestures (LOOPS)**: Draw circles to spin all clouds together with intensity scaling
+- **Infinity Gestures**: Rapid figure-8 motions trigger an explosion effect, scattering clouds independently
+- **30ms Intent Detection**: Brief delay determines gesture type before applying physics
+- **Predict-and-Lock Direction**: Cross-product analysis with 2-circle threshold for direction reversal
 
 ### Visual Effects
 - **Infinite Background Transition**: 70-second cycle smoothly transitioning between:
@@ -12,93 +19,88 @@ A mesmerizing generative art piece featuring continuously evolving nebula-like b
   - **Transition to White (10s)**: Ultra-smooth blend mode fade (ADD → BLEND → MULTIPLY)
   - **White Background (20s)**: Subtractive (MULTIPLY) blend mode for watercolor paint effect  
   - **Transition to Black (10s)**: Smooth return with gentle fade-in to prevent popping
+- **Automatic Grayscale Mode**: Random intervals of monochrome rendering
 - **Dual Aesthetics**: Experience both cosmic glowing light and traditional watercolor in one continuous loop
-- **Organic Movement**: Blobs drift up to 25% of screen size with slow, noise-based flow patterns
-- **Dynamic Rotation**: Each blob spins at ±15°/sec with unique speeds and directions
+
+### Cloud Physics
+- **Momentum System**: Clouds maintain velocity with very light damping (0.9995)
+- **Cloud Repulsion**: Prevents clumping with distance-based repulsion
+- **Automated Wandering**: Noise-based velocity nudges prevent idle clumping
+- **Pacman Wrap**: Clouds wrap around screen edges at 50% past boundary
+- **Screen-Normalized Movement**: Velocity scaled to 1920px reference for consistent feel across devices
 
 ### Color & Composition
 - **Malibu Sunset Palette**: Warm oranges, corals, peachy pinks, magentas, violets, sea-greens, and soft sky blues
-- **Color Repetition Prevention**: No more than 2 similar hues consecutively (within 30° on color wheel)
+- **Color Diversity**: 70° minimum hue difference between clouds, checks last 5 spawned
 - **Radial Saturation Gradient**: Concentrated color cores with adaptive falloff based on background
-  - Black: Tight center (power 0.5) fading to 35% at edges
-  - White: Gentle falloff (power 1.2) maintaining 55% saturation at edges
 - **White Glow Layer**: Each blob has a luminous white halo underneath for depth and dimension
-  - Strong on black (40% alpha) for additive glow
-  - Subtle on white (15% alpha) for soft halos
 
-### Animation & Life Cycles
-- **Smooth Life Cycles**: Blobs assemble piece-by-piece (3s), sustain (20s), then gracefully fade (7s)
-- **Staggered Spawning**: 4 overlapping blobs with 7-second intervals ensure canvas is never empty
-- **Intelligent Placement**: Color-based spacing prevents muddy overlaps (similar hues stay apart)
-- **Persistent Visibility**: Blobs remain visible throughout transitions with blend-mode-aware alpha adjustments
-
-### Performance Optimizations
-- **Mobile-Optimized**: Runs smoothly on iPhone 17 Pro and other high-end devices
-- **Reduced Complexity**: 4 blobs (was 6), 120 subshapes per blob (was 230)
-- **Efficient Rendering**: Single pixel density, simplified recursion (3 levels vs 4)
-- **Smooth 60fps**: Optimized calculations and noise-based smooth transformations
+### Spawning System
+- **Initial Fast Spawn**: 3.5-second intervals until 8 clouds populate the screen
+- **Normal Spawn**: 7-second intervals maintain cloud density
+- **Minimum Distance**: 40% screen distance from existing clouds required
 
 ## 🎨 Versions
 
-### `nebula_transition.js` (Active/Default)
-The main version featuring infinite black-to-white transitions with:
-- Additive/subtractive blend mode switching
-- Extreme vibrancy on white (alpha 2.2, saturation 100)
-- Smooth flow and rotation
-- Performance optimizations for mobile
+The site automatically detects your device and loads the appropriate version:
 
-### `nebula_black.js`
-Pure black background version with:
-- ADD blend mode for glowing additive effects
-- White supporting layers for luminosity
-- Tight radial saturation cores
-- High vibrancy (alpha 1.5, saturation 95)
+### `nebula_mobile.js` (Mobile Devices)
+Optimized for touch devices with:
+- Touch gesture support
+- 10% larger cloud scale (0.787 vs 0.715)
+- Full gesture detection system
 
-### `nebula_white.js`
-Original cream background version with:
-- MULTIPLY blend mode for watercolor effect
-- Traditional gentle appearance
-- Softer, more subdued palette
+### `nebula_desktop.js` (Desktop/Laptop)
+Full quality version with:
+- Mouse gesture support
+- Standard cloud scale (0.715)
+- Full gesture detection system
+
+### Legacy Files
+- `nebula_dynamic.js` - Previous dynamic version with color rotation
+- `nebula_working_physics.js` - Development version with orbital physics
+- `nebula_working_live.js` - Stable backup version
 
 ## 🔧 Technical Highlights
 
 ### Core Technologies
 - Built with [p5.js](https://p5js.org/)
 - HSB color space for stable, vibrant hues
-- Noise-based smooth jitter and flow for organic motion
-- Per-blob state management for flicker-free animation
+- Delta-time integration for frame-rate independent physics
+- Per-cloud state management for flicker-free animation
 
-### Advanced Features
-- **Smootherstep Easing**: 5th-order polynomial interpolation for ultra-smooth transitions
-- **Blend-Mode-Aware Parameters**: Alpha, saturation, and brightness adjust dynamically based on current blend mode
-- **Additive Fade Protection**: Special fade curves prevent "popping" when returning to ADD mode
-- **Extended Blend Zones**: 70% of transition time (15%-85%) in BLEND mode for seamless effect changes
-- **Radial Attenuation**: Watercolor pooling effect with mid-ring peaks
-- **Life Cycle Management**: Individual blob timers with assembly/sustain/fade phases
+### Gesture Detection
+- **Turn Analysis**: Cross-product of consecutive movement vectors
+- **Direction Confidence**: Multiple consistent turns required before locking direction
+- **Intensity Scaling**: Consecutive loops increase chaos multiplier up to 200%
+- **Infinity Detection**: 3+ rapid direction flips trigger scatter effect
 
 ### Performance
-- Smart shape generation with reduced recursion
-- Efficient noise sampling for smooth transformations
-- Optimized blend mode switching
+- 8 numSplotches per cloud
+- 180 arr_num subshapes
+- Efficient noise sampling
 - Single pixel density for mobile devices
 
 ## 🚀 Usage
 
 ### Web Browser
-Simply open `index.html` in a web browser. The sketch will fill the window and begin its infinite transition cycle.
+Simply open `index.html` in a web browser. The site automatically detects mobile vs desktop.
 
 ### Live Version
 Visit [https://mattRGlover.github.io/Nebula/](https://mattRGlover.github.io/Nebula/)
 
-**Keyboard Shortcuts:**
-- Press `N` to restart the cycle from the beginning
+### Interactions
+- **Drag**: Kick clouds in the drag direction
+- **Circle**: Spin all clouds (intensity increases with consecutive circles)
+- **Figure-8**: Scatter clouds in all directions (one-time explosion)
 
 ## 📁 Files
 
-- `index.html` - Main HTML entry point
-- `nebula_transition.js` - **Active**: Infinite black/white transition with full feature set
-- `nebula_black.js` - Pure black background with additive glow
-- `nebula_white.js` - Original cream background with watercolor effect
+- `index.html` - Main HTML entry point with device detection
+- `nebula_mobile.js` - **Active**: Touch-optimized version
+- `nebula_desktop.js` - **Active**: Mouse-optimized version
+- `nebula_dynamic.js` - Legacy dynamic color rotation version
+- `nebula_working_physics.js` - Development orbital physics version
 
 ## 🎯 Key Parameters
 
@@ -109,47 +111,35 @@ Visit [https://mattRGlover.github.io/Nebula/](https://mattRGlover.github.io/Nebu
 - To Black Transition: 10 seconds
 - **Full Cycle**: 70 seconds
 
-### Blend Modes by Phase
-- `easedT < 0.15`: ADD mode (additive light)
-- `0.15 ≤ easedT < 0.85`: BLEND mode (smooth transition)
-- `easedT ≥ 0.85`: MULTIPLY mode (subtractive paint)
+### Physics Settings
+- **Max Speed**: 3.0
+- **Damping**: 0.9995 (very light)
+- **Spin Cap**: ±80
+- **Spin Momentum Cap**: ±15
 
-### Vibrancy Settings
-**Black Background:**
-- Alpha: 1.2
-- Saturation: 94
-- Brightness: 96
-
-**White Background:**
-- Alpha: 2.2 (extreme boost for MULTIPLY)
-- Saturation: 100 (maximum)
-- Brightness: 100 (maximum)
-
-### Movement
-- Flow Speed: 0.00003 (very slow for wide cycles)
-- Flow Scale: 25% of screen size
-- Rotation: ±15°/second
+### Gesture Thresholds
+- **Circular Detection**: >60° cumulative rotation
+- **Loop Direction Lock**: 720° (2 full circles)
+- **Infinity Trigger**: 3+ direction flips
 
 ## 🛠️ Development Notes
 
-### Session Highlights (Nov 21, 2025)
-1. Created three distinct versions (black, white, transition)
-2. Implemented infinite loop with smooth blend mode transitions
-3. Added organic flow and increased rotation for dynamic movement
-4. Optimized for mobile performance (60-70% improvement)
-5. Extreme vibrancy boost for white background to match black
-6. Solved "popping" issue when returning to black with fade curves
-7. Extended blend zones (15%-85%) for ultra-smooth transitions
+### Latest Updates (Jan 2026)
+1. Implemented gesture detection system (LINEAR, LOOPS, INFINITY)
+2. Created separate mobile/desktop versions with automatic detection
+3. Added predict-and-lock direction system for circular gestures
+4. Infinity gesture triggers one-time explosion with golden angle spread
+5. Distance-based kick physics using gesture end position
+6. Cloud repulsion system prevents clumping
 
-### Performance Optimizations Applied
-- Blobs: 6 → 4 (33% reduction)
-- Subshapes: 230 → 120 (48% reduction)
-- Recursion depth: 4 → 3 levels
-- Pixel density: 2 → 1 (50% fewer pixels)
+### Performance Optimizations
+- DeltaTime integration for frame-rate independence
+- Screen-scale factor normalizes movement across devices
+- Efficient gesture analysis with turn consistency checks
 
 ## 📝 License
 
-Created by Matt Glover, 2024-2025
+Created by Matt Glover, 2024-2026
 
 ---
 
