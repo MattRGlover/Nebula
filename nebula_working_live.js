@@ -2,16 +2,9 @@ let BASE_UNIT;
 let randomSeedValue;
 let reseedTimestamp = 0; // tracks when we last reseeded so we can fade in new fields
 let blobStates = {};     // per-blob state so we can change visible subshapes gradually
-let recentBlobHues = []; // track last 3 blob hues to prevent repetition
-let recentCloudSizes = []; // track last 3 cloud sizes to prevent alternating pattern
+let recentBlobHues = []; // track last 2 blob hues to prevent repetition
 let startTime = 0;       // track when animation started
 let nextPermanentId = 0; // counter for unique blob IDs
-
-// Shared path system - all clouds follow this single complex path
-let sharedPathVelocity = 0; // Shared speed along path (controlled by UP/DOWN drags) - RESET TO 0
-
-// DEBUG: Separate layer for path visualization
-let pathLayer;
 
 // Dashboard-controlled parameters
 const params = {
@@ -19,7 +12,7 @@ const params = {
   radialSpeed: 0.003,    // scaled by BASE_UNIT (slider max)
   flowStrength: 1.0,     // multiplier on flowSpeed
   sizeDepth: 2.0,        // depth of size pulsing (slider max)
-  sizeSpeed: 0.0005,     // frequency of size pulsing (very slow)
+  sizeSpeed: 0.0015,     // frequency of size pulsing (slower default)
   opacityDepth: 0.8,     // how far toward invisible opacity can go (0..1)
   opacitySpeed: 0.002,   // frequency of opacity pulsing (slower by default)
   sizeFxEnabled: true,
@@ -79,10 +72,6 @@ function setup() {
   // Lower pixel density for better performance, especially on mobile
   pixelDensity(1);
   BASE_UNIT = Math.min(width, height);
-  
-  // Create separate layer for path visualization
-  pathLayer = createGraphics(windowWidth, windowHeight);
-  pathLayer.pixelDensity(1);
 
   // Initial seed so the structure is stable until user changes it
   randomSeedValue = int(random(1000000));
@@ -136,11 +125,6 @@ function draw() {
   // Apply 2D water ripple simulation
   simulateWaterRipples();
   applyWaterDistortion();
-  
-  // DEBUG: Draw path on separate layer and display it on top
-  // HIDDEN: Uncomment these lines to show path visualization
-  // drawPathVisualization();
-  // image(pathLayer, 0, 0);
 }
 
 function windowResized() {
@@ -268,73 +252,14 @@ function mouseReleased() {
   }
   
   // Set target momentum for all clouds to lerp toward gradually (no jumps)
-  // Scale momentum by proximity to gesture - closer clouds get more effect
   if (globalRotationBoost !== 0 || globalFlowBoost !== 0) {
-    // Use center of drag gesture as reference point
-    const gestureX = (touchStartX + mouseEndX) / 2;
-    const gestureY = (touchStartY + mouseEndY) / 2;
-    
-    console.log(`🎯 Gesture at (${gestureX.toFixed(0)}, ${gestureY.toFixed(0)}) - base momentum: ${globalRotationBoost.toFixed(1)}`);
-    
-    let cloudsWithPosition = 0;
-    let cloudsWithoutPosition = 0;
-    
     for (let blobId in blobStates) {
       const state = blobStates[blobId];
-      
-      // Calculate distance from cloud center to gesture location
-      if (state.x !== undefined && state.y !== undefined) {
-        cloudsWithPosition++;
-        const dx = state.x - gestureX;
-        const dy = state.y - gestureY;
-        const distance = Math.sqrt(dx * dx + dy * dy);
-        
-        // Dramatic proximity falloff: 1.0 at gesture, ~0.05 at screen edge
-        const maxDistance = Math.sqrt(width * width + height * height); // Screen diagonal
-        const normalizedDist = distance / maxDistance; // 0 to 1
-        // Exponential falloff: close clouds get huge effect, far clouds barely any
-        const proximityFactor = constrain(Math.pow(1.0 - normalizedDist, 2.5), 0.05, 1.0);
-        
-        // Apply scaled momentum
-        const scaledMomentum = globalRotationBoost * proximityFactor;
-        state.targetRotation = state.accumulatedRotation + scaledMomentum;
-        // Directly modify shared path velocity (all clouds move together)
-        if (globalFlowBoost !== 0) {
-          const velocityChange = globalFlowBoost * 0.000002 * proximityFactor; // Very small increments (0.0002 * 0.01)
-          sharedPathVelocity += velocityChange;
-          console.log(`🌀 VELOCITY CHANGED: ${sharedPathVelocity.toFixed(6)} (boost=${globalFlowBoost.toFixed(2)}, change=${velocityChange.toFixed(6)})`);
-        }
-        
-        // Update native spin direction to match drag direction (prevents reverse spin after decay)
-        if (scaledMomentum !== 0) {
-          const dragDirection = scaledMomentum > 0 ? 1 : -1;
-          state.baseSpinSpeed = Math.abs(state.baseSpinSpeed) * dragDirection;
-        }
-        
-        console.log(`📍 Cloud ${blobId}: pos=(${state.x.toFixed(0)},${state.y.toFixed(0)}), dist=${distance.toFixed(0)}px, prox=${proximityFactor.toFixed(2)}, momentum=${scaledMomentum.toFixed(1)}`);
-      } else {
-        cloudsWithoutPosition++;
-        // Cloud doesn't have position yet, apply full momentum
-        state.targetRotation = state.accumulatedRotation + globalRotationBoost;
-        // Directly modify shared path velocity
-        if (globalFlowBoost !== 0) {
-          const velocityChange = globalFlowBoost * 0.0005; // Reduced 20x for slower visible movement
-          sharedPathVelocity += velocityChange;
-          console.log(`🌀 VELOCITY CHANGED (no pos): ${sharedPathVelocity.toFixed(6)} (boost=${globalFlowBoost.toFixed(2)})`);
-        }
-        
-        // Update native spin direction to match drag direction
-        if (globalRotationBoost !== 0) {
-          const dragDirection = globalRotationBoost > 0 ? 1 : -1;
-          state.baseSpinSpeed = Math.abs(state.baseSpinSpeed) * dragDirection;
-        }
-        
-        console.log(`⚠️ Cloud ${blobId}: NO POSITION - applying full momentum`);
-      }
-      
+      state.targetRotation = state.accumulatedRotation + globalRotationBoost;
+      state.targetDrift = state.accumulatedDrift + (globalFlowBoost * 0.00001);
       blobStates[blobId] = state;
     }
-    console.log(`✅ Applied to ${cloudsWithPosition} positioned clouds, ${cloudsWithoutPosition} without position`);
+    console.log(`✅ Applied momentum: rotation=${globalRotationBoost.toFixed(1)}, drift=${globalFlowBoost.toFixed(1)}`);
     
     // Clear global boosts after setting targets
     globalRotationBoost = 0;
@@ -466,73 +391,14 @@ function touchEnded() {
   }
   
   // Set target momentum for all clouds to lerp toward gradually (no jumps)
-  // Scale momentum by proximity to gesture - closer clouds get more effect
   if (globalRotationBoost !== 0 || globalFlowBoost !== 0) {
-    // Use center of drag gesture as reference point
-    const gestureX = (touchStartX + touchEndX) / 2;
-    const gestureY = (touchStartY + touchEndY) / 2;
-    
-    console.log(`🎯 Gesture at (${gestureX.toFixed(0)}, ${gestureY.toFixed(0)}) - base momentum: ${globalRotationBoost.toFixed(1)}`);
-    
-    let cloudsWithPosition = 0;
-    let cloudsWithoutPosition = 0;
-    
     for (let blobId in blobStates) {
       const state = blobStates[blobId];
-      
-      // Calculate distance from cloud center to gesture location
-      if (state.x !== undefined && state.y !== undefined) {
-        cloudsWithPosition++;
-        const dx = state.x - gestureX;
-        const dy = state.y - gestureY;
-        const distance = Math.sqrt(dx * dx + dy * dy);
-        
-        // Dramatic proximity falloff: 1.0 at gesture, ~0.05 at screen edge
-        const maxDistance = Math.sqrt(width * width + height * height); // Screen diagonal
-        const normalizedDist = distance / maxDistance; // 0 to 1
-        // Exponential falloff: close clouds get huge effect, far clouds barely any
-        const proximityFactor = constrain(Math.pow(1.0 - normalizedDist, 2.5), 0.05, 1.0);
-        
-        // Apply scaled momentum
-        const scaledMomentum = globalRotationBoost * proximityFactor;
-        state.targetRotation = state.accumulatedRotation + scaledMomentum;
-        // Directly modify shared path velocity (all clouds move together)
-        if (globalFlowBoost !== 0) {
-          const velocityChange = globalFlowBoost * 0.000002 * proximityFactor; // Very small increments (0.0002 * 0.01)
-          sharedPathVelocity += velocityChange;
-          console.log(`🌀 VELOCITY CHANGED: ${sharedPathVelocity.toFixed(6)} (boost=${globalFlowBoost.toFixed(2)}, change=${velocityChange.toFixed(6)})`);
-        }
-        
-        // Update native spin direction to match drag direction (prevents reverse spin after decay)
-        if (scaledMomentum !== 0) {
-          const dragDirection = scaledMomentum > 0 ? 1 : -1;
-          state.baseSpinSpeed = Math.abs(state.baseSpinSpeed) * dragDirection;
-        }
-        
-        console.log(`📍 Cloud ${blobId}: pos=(${state.x.toFixed(0)},${state.y.toFixed(0)}), dist=${distance.toFixed(0)}px, prox=${proximityFactor.toFixed(2)}, momentum=${scaledMomentum.toFixed(1)}`);
-      } else {
-        cloudsWithoutPosition++;
-        // Cloud doesn't have position yet, apply full momentum
-        state.targetRotation = state.accumulatedRotation + globalRotationBoost;
-        // Directly modify shared path velocity
-        if (globalFlowBoost !== 0) {
-          const velocityChange = globalFlowBoost * 0.0005; // Reduced 20x for slower visible movement
-          sharedPathVelocity += velocityChange;
-          console.log(`🌀 VELOCITY CHANGED (no pos): ${sharedPathVelocity.toFixed(6)} (boost=${globalFlowBoost.toFixed(2)})`);
-        }
-        
-        // Update native spin direction to match drag direction
-        if (globalRotationBoost !== 0) {
-          const dragDirection = globalRotationBoost > 0 ? 1 : -1;
-          state.baseSpinSpeed = Math.abs(state.baseSpinSpeed) * dragDirection;
-        }
-        
-        console.log(`⚠️ Cloud ${blobId}: NO POSITION - applying full momentum`);
-      }
-      
+      state.targetRotation = state.accumulatedRotation + globalRotationBoost;
+      state.targetDrift = state.accumulatedDrift + (globalFlowBoost * 0.00001);
       blobStates[blobId] = state;
     }
-    console.log(`✅ Applied to ${cloudsWithPosition} positioned clouds, ${cloudsWithoutPosition} without position`);
+    console.log(`✅ Applied momentum: rotation=${globalRotationBoost.toFixed(1)}, drift=${globalFlowBoost.toFixed(1)}`);
     
     // Clear global boosts after setting targets
     globalRotationBoost = 0;
@@ -637,8 +503,8 @@ function applyDragEffects() {
     const currentTime = millis();
     const timeSinceLastSwipe = currentTime - swipeAccumulationTime;
     
-    // Each swipe adds progressive drift change (starts subtle, builds up like rotation)
-    const swipePower = 0.8; // Gentle progressive increase per swipe
+    // Each swipe adds significant drift change to make UP/DOWN drags more impactful
+    const swipePower = 3.0; // Strong increase per swipe to see visible drift/dance changes
     
     // If same direction within 800ms, accumulate momentum
     if ((lastSwipeDirection === swipeDirection) && (timeSinceLastSwipe < 800)) {
@@ -733,7 +599,7 @@ function handleCircularGesture(gesture) {
   
   // Boost rotation speed based on gesture
   const rotationMultiplier = direction === 'clockwise' ? 1 : -1;
-  globalRotationBoost = intensity * rotationMultiplier * 400.0; // Very responsive - single drag gives strong spin
+  globalRotationBoost = intensity * rotationMultiplier * 5.0; // Decay over time
   
   console.log(`🌀 ${direction} swipe - rotation boost: ${globalRotationBoost.toFixed(2)}`);
 }
@@ -825,58 +691,32 @@ function spawnCloudAtPosition(x, y) {
   
   console.log(`🔄 Replacing blob ${newBlobId} (lifecycle ${maxLifeProgress.toFixed(2)})`);
   
-  // Generate random size ensuring it's different from recent clouds
-  let radius;
-  let attempt = 0;
-  const maxSizeAttempts = 30;
+  // Generate random size with WIDE variety (no size reduction multiplier)
+  const baseRadius = random(BASE_UNIT * 0.10, BASE_UNIT * 0.32);
+  // Add more variation: 0.5x to 1.5x for dramatic size differences
+  const radius = random(baseRadius * 0.5, baseRadius * 1.5);
   
-  do {
-    // Good size range: small to medium-large
-    const baseRadius = random(BASE_UNIT * 0.05, BASE_UNIT * 0.20);
-    radius = baseRadius * random(0.5, 1.8);
-    
-    // Check if different enough from recent clouds (at least 15% from any of last 3)
-    if (recentCloudSizes.length === 0) {
-      break; // First cloud, any size is fine
-    }
-    
-    // Must be at least 15% different from ALL recent clouds
-    const isDifferentFromAll = recentCloudSizes.every(recentSize => {
-      const sizeDiff = Math.abs(radius - recentSize) / recentSize;
-      return sizeDiff > 0.15;
-    });
-    
-    if (isDifferentFromAll) {
-      break; // Size is different enough from all recent clouds
-    }
-    
-    attempt++;
-  } while (attempt < maxSizeAttempts);
-  
-  // Track this size for next clouds
-  recentCloudSizes.push(radius);
-  if (recentCloudSizes.length > 3) recentCloudSizes.shift();
-  
-  // Pick a random hue avoiding recent spawned colors
+  // Pick a random hue avoiding the last spawned color
   let zone_hue;
-  let hueAttempt = 0;
-  const maxHueAttempts = 30;
-  const minHueDifference = 60; // Minimum 60° difference from any recent cloud
+  let attempt = 0;
+  const maxHueAttempts = 10;
+  const minHueDifference = 60; // Minimum 60° difference from last spawned
   
   do {
     let hueNoise = random();
     zone_hue = hueNoise * 360;
     
-    // Check if different enough from ALL recent spawned clouds (not just last one)
-    const isDifferentFromAllHues = recentBlobHues.length === 0 || recentBlobHues.every(recentHue => {
-      let diff = Math.abs(zone_hue - recentHue);
+    // Check if different enough from last spawned cloud
+    const isSimilarToLast = recentBlobHues.length > 0 && (() => {
+      const lastHue = recentBlobHues[recentBlobHues.length - 1];
+      let diff = Math.abs(zone_hue - lastHue);
       if (diff > 180) diff = 360 - diff;
-      return diff >= minHueDifference;
-    });
+      return diff < minHueDifference;
+    })();
     
-    if (isDifferentFromAllHues) break;
-    hueAttempt++;
-  } while (hueAttempt < maxHueAttempts);
+    if (!isSimilarToLast) break;
+    attempt++;
+  } while (attempt < maxHueAttempts);
   
   recentBlobHues.push(zone_hue);
   if (recentBlobHues.length > 3) recentBlobHues.shift();
@@ -985,7 +825,7 @@ function setColorTarget(blobId, targetHue, targetSat, durationMs, currentTime) {
 function generateWatercolorBackground(pg, time = 0) {
   pg.push();
   pg.colorMode(HSB, 360, 100, 100, 100);
-  pg.angleMode(RADIANS); // Use RADIANS for Math.PI calculations in path
+  pg.angleMode(DEGREES);
 
   // Time tracking for cloud lifecycle
   const currentElapsed = time;
@@ -1061,10 +901,10 @@ function generateWatercolorBackground(pg, time = 0) {
   }
 
   const numSplotches = 8; // More clouds for richer composition
-  const arr_num = 230; // Many small sub-shapes per blob for rich texture (from github reference)
+  const arr_num = 120; // Reduced from 230 - less subshapes but still looks good
 
   // Shared one-shot life timing for all blobs
-  const assembleDuration = 1000;   // ms - faster formation for manual clouds
+  const assembleDuration = 3000;   // ms
   const sustainDuration  = 20000;  // ms
   const fadeDuration     = 7000;   // ms
   const totalLife        = assembleDuration + sustainDuration + fadeDuration;
@@ -1102,15 +942,7 @@ function generateWatercolorBackground(pg, time = 0) {
       timeSinceStart = currentElapsed - (state.spawnTime - reseedTimestamp);
       cycleIndex = 0; // Manual clouds only live one cycle
       
-      // After manual cloud completes its lifecycle, revert to automatic
-      if (timeSinceStart > totalLife) {
-        console.log(`♻️ Blob ${i}: Manual cloud completed lifecycle, reverting to automatic`);
-        delete state.spawnTime; // Remove manual marker
-        // Recalculate as automatic cloud
-        const spawnOffset = i * spawnInterval;
-        timeSinceStart = rawElapsedSinceReseed - spawnOffset;
-        cycleIndex = timeSinceStart <= 0 ? 0 : Math.floor(timeSinceStart / totalLife);
-      } else if (i === 0 || timeSinceStart < 2000) {
+      if (i === 0 || (state.spawnTime && (currentElapsed - (state.spawnTime - reseedTimestamp)) < 2000)) {
         console.log(`🔍 Blob ${i} (manual): timeSinceStart=${timeSinceStart.toFixed(0)}ms, spawnTime=${state.spawnTime}, reseedTimestamp=${reseedTimestamp}`);
       }
     } else {
@@ -1138,23 +970,12 @@ function generateWatercolorBackground(pg, time = 0) {
       state.transitionDuration = 0;
     }
     
-    // Each cloud has its own native slow spin speed (direction and speed vary)
-    if (state.baseSpinSpeed === undefined) {
-      state.baseSpinSpeed = pg.random(-0.5, 0.5); // Very slow native spin in random direction
-    }
-    
-    // Initialize momentum states for user-controlled rotation
+    // Initialize permanent rotation and drift momentum (accumulated from swipes)
     if (state.accumulatedRotation === undefined) {
-      state.accumulatedRotation = 0; // User's accumulated rotation momentum
-      state.targetRotation = 0; // Target rotation to lerp toward
+      state.accumulatedRotation = 0; // Permanent rotation velocity added from swipes
     }
-    
-    // Initialize shared path position (all clouds on same complex path)
-    if (state.pathPosition === undefined) {
-      state.pathPosition = pg.random(1.0); // Position along shared path (0-1, wraps)
-    }
-    if (state.accumulatedAngle === undefined) {
-      state.accumulatedAngle = 0; // Actual rotation position (accumulates over time)
+    if (state.accumulatedDrift === undefined) {
+      state.accumulatedDrift = 0; // Permanent drift velocity added from swipes
     }
     if (state.targetRotation === undefined) {
       state.targetRotation = 0; // Target rotation to lerp toward
@@ -1236,13 +1057,13 @@ function generateWatercolorBackground(pg, time = 0) {
       // Blob size varies independently per blob with WIDE variation
       // Range from small accent clouds to large dominant washes
       let baseRadius = pg.random(BASE_UNIT * 0.10, BASE_UNIT * 0.32) * 0.9;
-
-      // Stable per-blob radius scaled by BASE_UNIT for consistent sizing
+      // Make very first-generation blobs a bit smaller so they don't
+      // dominate the early composition compared to later cycles.
+      if (cycleIndex === 0) {
+        baseRadius *= 0.78;
+      }
       // Add even more per-blob variation: 0.6x to 1.3x
       const radius = pg.random(baseRadius * 0.6, baseRadius * 1.3);
-      
-      // Store radius in state for distance calculations
-      state.radius = radius;
 
       let zone_x, zone_y;
 
@@ -1376,91 +1197,48 @@ function generateWatercolorBackground(pg, time = 0) {
     // - pulsing (unique rate/amplitude per splotch)
     const t = absoluteScaled * 0.0005; // global time in seconds-ish
 
-    // Spin speed = native base speed + user's accumulated momentum
-    // Lerp accumulated momentum toward target (fast response, smooth but immediate)
-    state.accumulatedRotation = pg.lerp(state.accumulatedRotation, state.targetRotation, 0.2);
+    // Unique spin speed and direction per splotch - increased for more rotation
+    // Apply accumulated rotation from swipes - each cloud maintains its own momentum
+    const baseSpinSpeed = pg.map(pg.noise(i * 0.7), 0, 1, -15, 15); // deg/sec
     
-    // NO DECAY: Momentum persists indefinitely until user drags again
-    
-    // Final spin = native speed + user momentum (when momentum→0, returns to native)
-    const spinSpeed = state.baseSpinSpeed + state.accumulatedRotation;
-    
-    // Accumulate angle each frame based on current spin speed (maintains rotation position)
-    state.accumulatedAngle += spinSpeed * 0.016; // ~60fps frame time
-    // Convert degrees to radians since pg.angleMode is now RADIANS
-    const splotchAngle = state.accumulatedAngle + i * (20 * Math.PI / 180);
-    
-    // All clouds follow the same complex child-like drawing path
-    // EXCEPT manually spawned clouds which stay at their spawn location
-    let driftX = 0;
-    let driftY = 0;
-    
-    const isManualCloud = state.spawnTime !== undefined;
-    
-    if (state.x !== undefined && state.y !== undefined && !isManualCloud) {
-      // Automatic clouds: Update position along shared path
-      state.pathPosition += sharedPathVelocity;
-      state.pathPosition = (state.pathPosition % 1.0 + 1.0) % 1.0; // Wrap 0-1
-      
-      // Generate EXTREMELY complex path with many layers
-      // MUST MATCH path_debug.js EXACTLY - use main canvas dimensions NOT pg buffer dimensions
-      const centerX = width / 2;
-      const centerY = height / 2;
-      const p = state.pathPosition;
-      
-      // Layer 1: Base large loops
-      const t1 = p * Math.PI * 2;
-      const baseX = centerX + pg.cos(t1) * width * 0.35;
-      const baseY = centerY + pg.sin(t1) * height * 0.35;
-      
-      // Layer 2-4: Multiple frequency wobbles
-      const t2 = p * Math.PI * 12;
-      const wobble2X = pg.cos(t2 * 1.3) * BASE_UNIT * 0.15;
-      const wobble2Y = pg.sin(t2 * 0.9) * BASE_UNIT * 0.15;
-      
-      const t3 = p * Math.PI * 24;
-      const wobble3X = pg.sin(t3 * 1.7) * BASE_UNIT * 0.12;
-      const wobble3Y = pg.cos(t3 * 2.1) * BASE_UNIT * 0.12;
-      
-      const t4 = p * Math.PI * 36;
-      const wobble4X = pg.cos(t4 * 0.7) * BASE_UNIT * 0.1;
-      const wobble4Y = pg.sin(t4 * 1.1) * BASE_UNIT * 0.1;
-      
-      // Layer 5-7: Multiple noise layers at different scales
-      const noise1X = (pg.noise(p * 30, 100) - 0.5) * BASE_UNIT * 0.25;
-      const noise1Y = (pg.noise(p * 30, 200) - 0.5) * BASE_UNIT * 0.25;
-      
-      const noise2X = (pg.noise(p * 50, 300) - 0.5) * BASE_UNIT * 0.18;
-      const noise2Y = (pg.noise(p * 50, 400) - 0.5) * BASE_UNIT * 0.18;
-      
-      const noise3X = (pg.noise(p * 80, 500) - 0.5) * BASE_UNIT * 0.12;
-      const noise3Y = (pg.noise(p * 80, 600) - 0.5) * BASE_UNIT * 0.12;
-      
-      // Layer 8-9: Large sweeping organic curves
-      const t5 = p * Math.PI * 6;
-      const curve1X = pg.sin(t5 * 1.9) * width * 0.25;
-      const curve1Y = pg.cos(t5 * 2.7) * height * 0.25;
-      
-      const t6 = p * Math.PI * 18;
-      const curve2X = pg.cos(t6 * 1.3) * width * 0.18;
-      const curve2Y = pg.sin(t6 * 1.8) * height * 0.18;
-      
-      // Combine all layers
-      const targetX = baseX + wobble2X + wobble3X + wobble4X + noise1X + noise2X + noise3X + curve1X + curve2X;
-      const targetY = baseY + wobble2Y + wobble3Y + wobble4Y + noise1Y + noise2Y + noise3Y + curve1Y + curve2Y;
-      
-      // Set position DIRECTLY on the shared path (no drift/interpolation)
-      state.x = targetX;
-      state.y = targetY;
-      driftX = 0; // No drift needed - position is exact
-      driftY = 0;
+    // If not dragging, decay target momentum back to 0 (natural state)
+    // Wait 5 seconds after drag stops, then decay at moderate pace
+    if (!isDragging && (millis() - lastDragTime > 5000)) {
+      state.targetRotation = pg.lerp(state.targetRotation, 0, 0.01); // Decay ~10 seconds to baseline
     }
-    // Manually spawned clouds: keep their spawn position (state.x, state.y already set)
+    
+    // Gradually lerp accumulated momentum toward target (very slow, no visible jumps)
+    state.accumulatedRotation = pg.lerp(state.accumulatedRotation, state.targetRotation, 0.02);
+    blobStates[blobId] = state;
+    
+    const spinSpeed = baseSpinSpeed + state.accumulatedRotation;
+    const splotchAngle = t * spinSpeed + i * 20;
+
+    // Add organic drift/flow for traveling blobs
+    // If not dragging, decay target drift back to 0 (natural state)
+    // Wait 5 seconds after drag stops, then decay at moderate pace
+    if (!isDragging && (millis() - lastDragTime > 5000)) {
+      state.targetDrift = pg.lerp(state.targetDrift, 0, 0.01); // Decay ~10 seconds to baseline
+    }
+    
+    // Gradually lerp accumulated drift toward target (very slow, no visible jumps)
+    state.accumulatedDrift = pg.lerp(state.accumulatedDrift, state.targetDrift, 0.02);
+    blobStates[blobId] = state;
+    
+    // Calculate drift multiplier from accumulated drift (positive = more chaotic, negative = more stagnant)
+    const driftMultiplier = 1.0 + (state.accumulatedDrift * 1000); // Scale up the effect
+    const clampedMultiplier = pg.constrain(driftMultiplier, 0.1, 5.0); // Range from 10% (stagnant) to 500% (chaotic)
+    
+    const baseFlowSpeed = 0.00003; // Very slow for wide, gradual cycles
+    const flowSpeed = baseFlowSpeed * clampedMultiplier; // Speed affected by drift
+    const flowScale = BASE_UNIT * 0.25 * clampedMultiplier; // Scale affected by drift - more movement!
+    const driftX = (pg.noise(i * 0.53, absoluteScaled * flowSpeed) - 0.5) * 2 * flowScale;
+    const driftY = (pg.noise(i * 0.53 + 100, absoluteScaled * flowSpeed) - 0.5) * 2 * flowScale;
 
     // Per-splotch size pulsing: base noise-driven depth, modulated by dashboard speed/depth
     let pulse = 1;
     if (params.sizeFxEnabled) {
-      const basePulseAmt = pg.map(pg.noise(i * 1.1 + 1500), 0, 1, 0.01, 0.10); // 1-10% variation
+      const basePulseAmt = pg.map(pg.noise(i * 1.1 + 1500), 0, 1, 0.08, 0.22); // base depth
       const pulseAmp = basePulseAmt * params.sizeDepth;
       const sizePhase = absoluteScaled * params.sizeSpeed + i * 0.8;
       const sizeWave = 0.5 * (1 + pg.sin(sizePhase)); // 0..1
@@ -1475,9 +1253,9 @@ function generateWatercolorBackground(pg, time = 0) {
     pg.scale(pulse);
 
     for (let k = 0; k < arr_num; k++) {
-      let angle_sep = pg.int(3, pg.noise(k) * 7);
+      let angle_sep = pg.int(3, pg.noise(k) * 6); // Simplified range
       let points = createShape(radius, angle_sep, pg);
-      let form = transformShape(points, 4, 0.5, pg);
+      let form = transformShape(points, 3, 0.5, pg); // Reduced recursion from 4 to 3
       arr.push(form);
     }
 
@@ -1548,10 +1326,43 @@ function generateWatercolorBackground(pg, time = 0) {
       pg.push();
       pg.translate(jx, jy);
 
-      // Base alpha/saturation: keep per-subshape opacity low so
-      // overlapping layers preserve texture instead of blowing out.
-      let baseAlpha = (100 / arr_num) * 1.3; // Slightly increased for visibility
-      let baseSat   = 92; // High saturation but not maxed out
+      // Smoothly interpolate alpha/saturation with blend-mode-aware adjustments
+      // Use blendModeT for ultra-smooth alpha transitions
+      const blendModeSmooth = blendModeT * blendModeT * blendModeT * (blendModeT * (blendModeT * 6 - 15) + 10);
+      
+      // Base alpha adjusts based on blend mode
+      // ADD mode (blendModeT=0): 1.2 alpha (higher to ensure visibility)
+      // BLEND mode (blendModeT=0.5): 1.6 alpha (transition)
+      // MULTIPLY mode (blendModeT=1): 2.2 alpha (very high for vibrant colors on white)
+      let baseAlpha = pg.lerp(1.2, 2.2, blendModeSmooth) * (100 / arr_num);
+      
+      // BOOST alpha in grayscale mode for whiter clouds
+      if (actualSat < 50) {
+        // When desaturating, boost alpha to maintain visual intensity
+        const grayscaleBoost = pg.map(actualSat, 0, 50, 1.5, 1.0); // 1.5x at full grayscale, 1.0x at half saturation
+        baseAlpha *= grayscaleBoost;
+      }
+      
+      // Fade in/out multiplier for ADD mode to prevent popping
+      // Near ADD mode edges, gradually fade but keep visible
+      let additiveFade = 1.0;
+      if (easedT < 0.18) {
+        // Fading in to ADD from black - start higher to stay visible
+        additiveFade = pg.map(easedT, 0, 0.18, 0.85, 1.0); // Gentle fade in
+      } else if (easedT > 0.82) {
+        // Fading out of ADD when leaving black
+        additiveFade = pg.map(easedT, 0.82, 1.0, 1.0, 0.85); // Gentle fade out
+      }
+      baseAlpha *= additiveFade;
+      
+      // Saturation handling - use actualSat from color transition, not baseSat
+      // This ensures grayscale mode (actualSat = 0) is fully desaturated
+      // Boost saturation on black backgrounds for more vibrant colors
+      let baseSat = pg.lerp(98, 100, blendModeSmooth); // Increased from 94 to 98
+      
+      // OVERRIDE: If in grayscale mode, use actualSat directly (should be 0 or transitioning to 0)
+      // Otherwise apply radial gradient to baseSat
+      let finalSatBeforeRadial = actualSat;
 
       // One-shot life curve for brightness (lifeAlpha) that matches the
       // same timing as the geometry life above.
@@ -1610,11 +1421,22 @@ function generateWatercolorBackground(pg, time = 0) {
       const midRing = rNorm * (1 - rNorm); // 0 at center/edge, peak ~0.25 at rNorm=0.5
       const radialFactor = pg.map(midRing, 0, 0.25, 0.5, 1.0); // center ~0.5, mid ~1.0, edge ~0.5
 
-      // Radial saturation gradient: tight concentrated center, rapid falloff
-      // rNorm is 0 at center, 1 at edge
-      // Use exponential falloff for small saturated core
-      const saturationFactor = pg.map(pg.pow(rNorm, 0.4), 0, 1, 1.0, 0.25); // Steep falloff, small core
-      let saturation = baseSat * saturationFactor;
+      // Radial saturation gradient - smoothly blend between color and grayscale modes
+      // Calculate color mode saturation (with radial gradient)
+      const saturationPower = pg.lerp(0.5, 1.2, easedT);
+      const minSat = pg.lerp(0.35, 0.55, easedT);
+      const saturationFactor = pg.map(pg.pow(rNorm, saturationPower), 0, 1, 1.0, minSat);
+      const colorModeSat = baseSat * saturationFactor;
+      
+      // Grayscale mode saturation (flat, no gradient)
+      const grayscaleModeSat = actualSat;
+      
+      // Smooth blend factor: 0 = grayscale, 1 = color
+      // Use actualSat as blend factor (0-100 range)
+      const colorBlend = pg.constrain(actualSat / 100, 0, 1); // 0 when actualSat=0, 1 when actualSat=100
+      
+      // Smoothly interpolate between grayscale and color saturation
+      let saturation = pg.lerp(grayscaleModeSat, colorModeSat, colorBlend);
 
       // Final alpha combines: baseAlpha * blob life envelope * local opacity FX * global reseed fade-in * radial
       let alpha = baseAlpha * lifeAlpha * fadeFactor * reseedFade * radialFactor;
@@ -1626,21 +1448,51 @@ function generateWatercolorBackground(pg, time = 0) {
         saturation = min(100, saturation * 1.05);
       }
 
-      // Draw white supporting blob first (underneath) for subtle glow
-      // Moderate white glow for all subshapes - creates luminosity without blowout
-      const whiteAlpha = alpha * 0.55; // Balanced white glow
-      drawShape(form, pg.color(0, 0, 100, whiteAlpha), pg);
+      // White glow creates depth but must be controlled in ADD mode
+      // Black/ADD version: 0.4 alpha (moderate glow to avoid blowout)
+      // White/MULTIPLY version: 0.15 alpha (subtle halo)
+      // Use power curve to keep glow visible longer
+      const whiteGlowStrength = pg.lerp(0.4, 0.15, pg.pow(easedT, 2.0));
+      if (whiteGlowStrength > 0.05) {
+        const whiteAlpha = alpha * whiteGlowStrength;
+        drawShape(form, pg.color(0, 0, 100, whiteAlpha), pg);
+      }
       
-      // Then draw the colored blob on top
-      // Use a single stable hue (zone_hue) for all subshapes of this blob
-      // so its color does not drift over time.
-      drawShape(form, pg.color(zone_hue, saturation, 96, alpha), pg); // High but not maxed brightness
+      // Brightness calculation - smoothly blend between grayscale and color modes
+      
+      // GRAYSCALE MODE brightness: Invert based on background
+      let grayscaleBrightness;
+      if (easedT < 0.15) {
+        grayscaleBrightness = 100;  // Brighter white clouds on black
+      } else if (easedT < 0.85) {
+        const transitionT = (easedT - 0.15) / (0.85 - 0.15);
+        grayscaleBrightness = pg.lerp(100, 8, transitionT);
+      } else {
+        grayscaleBrightness = 8;  // Black clouds on white
+      }
+      
+      // COLOR MODE brightness: Boost on black backgrounds for vibrant colors
+      const brightnessT = easedT * easedT * easedT * (easedT * (easedT * 6 - 15) + 10);
+      // Black/ADD: 100 (maximum vibrancy), White/MULTIPLY: 100 (maintain brightness)
+      const colorBrightness = pg.lerp(100, 100, brightnessT); // Increased from 96 to 100
+      
+      // Smooth blend between grayscale and color brightness using colorBlend factor
+      // colorBlend was calculated above: 0 = grayscale, 1 = color
+      let brightness = pg.lerp(grayscaleBrightness, colorBrightness, colorBlend);
+      
+      // DETAILED LOGGING - only for first blob, first form, every 10 frames
+      if (i === 0 && formIndex === 0 && frameCount % 10 === 0 && state.transitionDuration > 0) {
+        console.log(`🔍 Saturation ${Math.round(actualSat)}%:`);
+        console.log(`   ColorBlend: ${colorBlend.toFixed(3)}`);
+        console.log(`   Sat: gray=${grayscaleModeSat.toFixed(1)} color=${colorModeSat.toFixed(1)} → final=${saturation.toFixed(1)}`);
+        console.log(`   Bri: gray=${grayscaleBrightness.toFixed(1)} color=${colorBrightness.toFixed(1)} → final=${brightness.toFixed(1)}`);
+        console.log(`   EasedT: ${easedT.toFixed(3)} | bgBri: ${bgBri.toFixed(1)}`);
+      }
+      
+      drawShape(form, pg.color(zone_hue, saturation, brightness, alpha), pg);
       pg.pop();
     }
     pg.pop();
-    
-    // Save state changes back to array (position, rotation, path progress, etc.)
-    blobStates[blobId] = state;
   }
   
   // Global boosts are NOT cleared here - they accumulate during drag
