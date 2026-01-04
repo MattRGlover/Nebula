@@ -130,8 +130,25 @@ function setup() {
 function draw() {
   background(0);
   
-  // Check if it's time to toggle grayscale mode automatically
+  // IDLE CLEANUP - reset gesture tracking after 3 seconds of no input
   const currentTime = millis();
+  const IDLE_CLEANUP_TIME = 3000; // 3 seconds
+  if (!isDragging && lastDragTime > 0 && (currentTime - lastDragTime > IDLE_CLEANUP_TIME)) {
+    // Only clean up once per idle period
+    if (touchPath.length > 0) {
+      console.log(`🧹 Idle cleanup: clearing ${touchPath.length} gesture points after ${((currentTime - lastDragTime) / 1000).toFixed(1)}s idle`);
+      touchPath = [];
+      lastProcessedIndex = 0;
+      lastSwipeCheckIndex = 0;
+      predictedDirection = 0;
+      directionConfidence = 0;
+      consecutiveLoops = 0;
+      directionFlips = 0;
+      lastDragTime = 0; // Prevent repeated cleanup logs
+    }
+  }
+  
+  // Check if it's time to toggle grayscale mode automatically
   if (nextGrayscaleToggleTime === 0) {
     // First time - schedule initial grayscale phase
     const interval = random(grayscaleMinInterval, grayscaleMaxInterval);
