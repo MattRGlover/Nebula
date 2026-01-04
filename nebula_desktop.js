@@ -24,6 +24,17 @@ const params = {
 const ENABLE_RENDER_DEBUG_LOGS = false;
 const ENABLE_DEBUG_GRID = false;
 
+// Performance monitoring
+let lastFrameTime = 0;
+let frameDeltas = []; // Rolling window of frame times
+let droppedFrames = 0;
+let lagSpikes = 0;
+let perfWarnings = []; // Recent performance warnings
+const FRAME_HISTORY = 60; // Track last 60 frames
+const TARGET_FRAME_TIME = 16.67; // 60fps target = 16.67ms per frame
+const LAG_THRESHOLD = 33; // Frame taking >33ms is a lag spike (dropped below 30fps)
+const DROP_THRESHOLD = 66; // Frame taking >66ms likely dropped frames
+
 // Transition settings - full cycle
 const BLACK_DURATION = 30000;      // 30 seconds at black
 const TO_WHITE_DURATION = 10000;   // 10 seconds transitioning to white
@@ -498,9 +509,9 @@ function applyDragEffects() {
 function applyLiveGestureEffects() {
   if (touchPath.length < 5) return;
   
-  // Wait 225ms before detecting gesture type to determine intent
+  // Wait 150ms before detecting gesture type to determine intent
   const gestureDuration = millis() - touchStartTime;
-  if (gestureDuration < 225) {
+  if (gestureDuration < 150) {
     currentGestureType = "⏳ WAITING...";
     return; // Not enough time to determine intent
   }
@@ -620,8 +631,9 @@ function applyLiveGestureEffects() {
   const totalTurns = sameDirTurns + oppDirTurns;
   const turnConsistency = totalTurns > 3 ? sameDirTurns / totalTurns : 0;
   
-  // Need: >70% turns in same direction AND >90° cumulative AND have a prediction
-  const isLoopsLike = turnConsistency > 0.7 && netAngle > (PI / 2) && predictedDirection !== 0;
+  // Need: >60% turns in same direction AND >45° cumulative AND have a prediction
+  // Lower thresholds for faster loop detection
+  const isLoopsLike = turnConsistency > 0.6 && netAngle > (PI / 4) && predictedDirection !== 0;
   
   // Determine detected gesture type (before lock)
   let detectedGesture = "LINEAR";
@@ -638,8 +650,8 @@ function applyLiveGestureEffects() {
   // Determine direction from which rotation is dominant (more stable than cumulative angle sign)
   const currentCW = cwRotation > ccwRotation;
   
-  // Detect direction reversal - require 2 full circles (~720°) of opposite rotation
-  const reverseThreshold = 4 * PI; // 2 circles worth
+  // Detect direction reversal - require 1 full circle (~360°) of opposite rotation
+  const reverseThreshold = 2 * PI; // 1 circle worth - more responsive
   const directionReversed = lockedGestureType === "LOOPS" && 
     ((lockedGestureCW && ccwRotation > cwRotation + reverseThreshold) || 
      (!lockedGestureCW && cwRotation > ccwRotation + reverseThreshold));
@@ -740,28 +752,66 @@ function applyLiveGestureEffects() {
         `⟳ CW ${numRotations.toFixed(1)}x ${consecutiveLoops.toFixed(1)}loops ${Math.round(chaosLevel*100)}%` : 
         `⟲ CCW ${numRotations.toFixed(1)}x ${consecutiveLoops.toFixed(1)}loops ${Math.round(chaosLevel*100)}%`;
       
-      // Rotation boost scales with intensity
-      const rotationBoost = (gestureCW ? 1 : -1) * (2 + numRotations * 5) * intensityMultiplier;
+      // Calculate gesture center (centroid of recent touch path)
+      let gestureCenterX = 0;
+      let gestureCenterY = 0;
+      const recentCount = min(touchPath.length, 30); // Use last 30 points
+      for (let i = touchPath.length - recentCount; i < touchPath.length; i++) {
+        gestureCenterX += touchPath[i].x;
+        gestureCenterY += touchPath[i].y;
+      }
+      gestureCenterX /= recentCount;
+      gestureCenterY /= recentCount;
+      
+      // Base rotation boost scales with intensity
+      const baseRotationBoost = (gestureCW ? 1 : -1) * (2 + numRotations * 5) * intensityMultiplier;
+      
+      // Find max distance for normalization (use screen diagonal as reference)
+      const maxProximityDist = sqrt(width * width + height * height) * 0.5;
       
       for (let blobId in blobStates) {
         const state = blobStates[blobId];
         
-        // DIRECTION CHANGE INTERRUPTS
+        // PROXIMITY-BASED SPIN - closer clouds spin more
+        const cloudX = state.x + width / 2; // Convert from centered coords
+        const cloudY = state.y + height / 2;
+        const distToGesture = sqrt((cloudX - gestureCenterX) ** 2 + (cloudY - gestureCenterY) ** 2);
+        
+        // Proximity factor: 1.0 at gesture center, 0.15 at max distance (minimum 15% effect)
+        const proximityFactor = max(0.15, 1.0 - (distToGesture / maxProximityDist) * 0.85);
+        
+        // Scale rotation boost by proximity
+        const rotationBoost = baseRotationBoost * proximityFactor;
+        
+        // SMOOTH DIRECTION CHANGE - gradual deceleration then acceleration
         const isOpposite = (gestureCW && state.targetRotation < -0.5) || 
                            (!gestureCW && state.targetRotation > 0.5);
+        const isSameDirection = (gestureCW && state.targetRotation >= 0) || 
+                                (!gestureCW && state.targetRotation <= 0);
+        
         if (isOpposite) {
-          state.targetRotation *= 0.3;
-          state.vx *= 0.5;
-          state.vy *= 0.5;
+          // Opposite direction: gradually slow down existing spin (drag toward zero)
+          // Don't apply boost in new direction until we're near zero
+          state.targetRotation *= 0.92; // Gentle deceleration
+          state.vx *= 0.98;
+          state.vy *= 0.98;
+          // Only start boosting in new direction once nearly stopped
+          if (abs(state.targetRotation) < 5) {
+            state.targetRotation += rotationBoost * 0.3; // Gentle start in new direction
+          }
+        } else if (isSameDirection) {
+          // Same direction: apply full boost
+          state.targetRotation += rotationBoost;
+        } else {
+          // Near zero: gentle boost to establish direction
+          state.targetRotation += rotationBoost * 0.5;
         }
         
-        // Apply rotation boost - scales with intensity, higher cap
-        state.targetRotation += rotationBoost;
-        state.targetRotation = constrain(state.targetRotation, -80, 80); // Higher cap for intense spin
+        state.targetRotation = constrain(state.targetRotation, -120, 120); // Higher cap for intense spin
         
-        // CENTRIFUGAL EFFECT - scales with intensity
+        // CENTRIFUGAL EFFECT - scales with intensity and proximity
         if (numRotations > 0.25) {
-          const centrifugalForce = chaosLevel * 0.8;
+          const centrifugalForce = chaosLevel * 0.8 * proximityFactor;
           const distFromCenter = sqrt(state.x * state.x + state.y * state.y);
           if (distFromCenter > 10) {
             state.vx += (state.x / distFromCenter) * centrifugalForce;
@@ -771,7 +821,7 @@ function applyLiveGestureEffects() {
         
         // INDIVIDUAL DANCE - scales with intensity
         if (numRotations > 0.15) {
-          const danceIntensity = chaosLevel * 0.5;
+          const danceIntensity = chaosLevel * 0.5 * proximityFactor;
           const blobIndex = parseInt(blobId.replace('blob_', ''));
           const danceAngle = noise(blobIndex * 0.5, millis() * 0.005) * TWO_PI * 2;
           state.vx += cos(danceAngle) * danceIntensity;
@@ -827,7 +877,7 @@ function applyLiveGestureEffects() {
                              (state.y - gestureY) * (state.y - gestureY));
       
       const distanceFactor = max(0, 1 - (cloudDist / maxEffectDist));
-      const kickStrength = baseIntensity * 2.0 * distanceFactor;
+      const kickStrength = baseIntensity * 5.0 * distanceFactor;
       
       if (distanceFactor > 0.1) { // Only affect nearby clouds
         // Dampen existing velocity proportional to proximity
@@ -1108,42 +1158,81 @@ function spawnCloudAtPosition(screenX, screenY) {
   // Use the blob slot to pick a distinct size different from other clouds
   // Size range: 10% to 40% of screen (using smaller dimension)
   const screenSize = min(width, height);
-  const minSize = screenSize * 0.10; // 10% of screen
-  const maxSize = screenSize * 0.40; // 40% of screen
+  const minSize = screenSize * 0.15; // 15% of screen
+  const maxSize = screenSize * 0.50; // 50% of screen
   
-  const numSplotchesLocal = 8; // Match desktop config
-  const sizeSlot = newBlobId % numSplotchesLocal;
-  const sizeT = sizeSlot / (numSplotchesLocal - 1);
-  const slotCenter = lerp(minSize, maxSize, sizeT);
-  const slotVariation = (maxSize - minSize) / numSplotchesLocal * 0.5;
-  const radius = slotCenter + random(-slotVariation, slotVariation);
+  // Fully random size within range
+  const radius = random(minSize, maxSize);
   
-  // Pick a random hue avoiding the last spawned color
+  // MALIBU SUNSET + FOREST palette with guaranteed diversity
+  // 7 distinct color zones to cycle through
+  const COLOR_ZONES = [
+    { name: 'coral-orange', min: 10, max: 35 },      // warm corals
+    { name: 'peachy-pink', min: 345, max: 15 },      // peachy pinks (wraps)
+    { name: 'magenta-violet', min: 290, max: 330 },  // magentas
+    { name: 'forest-green', min: 90, max: 140 },     // FOREST GREENS
+    { name: 'sea-green', min: 165, max: 195 },       // sea-greens/aqua
+    { name: 'sky-blue', min: 200, max: 225 },        // sky blues
+    { name: 'golden-yellow', min: 40, max: 55 },     // golden sunset
+  ];
+  
   let zone_hue;
   let attempt = 0;
-  const maxHueAttempts = 10;
-  const minHueDifference = 60; // Minimum 60° difference from last spawned
+  const maxHueAttempts = 15;
+  
+  // Find which zones are NOT recently used
+  const usedZoneIndices = recentBlobHues.map(hue => {
+    for (let i = 0; i < COLOR_ZONES.length; i++) {
+      const zone = COLOR_ZONES[i];
+      let inZone = false;
+      if (zone.min > zone.max) { // Wrapping zone (e.g., 345-15)
+        inZone = hue >= zone.min || hue <= zone.max;
+      } else {
+        inZone = hue >= zone.min && hue <= zone.max;
+      }
+      if (inZone) return i;
+    }
+    return -1;
+  });
+  
+  // Get available zones (not used in last 5 spawns)
+  const availableZones = COLOR_ZONES.map((_, i) => i).filter(i => !usedZoneIndices.includes(i));
   
   do {
-    let hueNoise = random();
-    zone_hue = hueNoise * 360;
+    // Pick from available zones first, otherwise random zone
+    const zoneIndex = availableZones.length > 0 
+      ? availableZones[Math.floor(random() * availableZones.length)]
+      : Math.floor(random() * COLOR_ZONES.length);
+    const zone = COLOR_ZONES[zoneIndex];
     
-    // Check if different enough from last spawned cloud
-    const isSimilarToLast = recentBlobHues.length > 0 && (() => {
-      const lastHue = recentBlobHues[recentBlobHues.length - 1];
-      let diff = Math.abs(zone_hue - lastHue);
+    // Generate hue within zone
+    if (zone.min > zone.max) { // Wrapping zone
+      const range = (360 - zone.min) + zone.max;
+      const offset = random() * range;
+      zone_hue = (zone.min + offset) % 360;
+    } else {
+      zone_hue = zone.min + random() * (zone.max - zone.min);
+    }
+    
+    // Check if too similar to ANY recent hue (within 50°)
+    const isSimilar = recentBlobHues.some(recentHue => {
+      let diff = Math.abs(zone_hue - recentHue);
       if (diff > 180) diff = 360 - diff;
-      return diff < minHueDifference;
-    })();
+      return diff < 50;
+    });
     
-    if (!isSimilarToLast) break;
+    if (!isSimilar || availableZones.length === 0) break;
     attempt++;
   } while (attempt < maxHueAttempts);
   
   recentBlobHues.push(zone_hue);
-  if (recentBlobHues.length > 3) recentBlobHues.shift();
+  if (recentBlobHues.length > 7) recentBlobHues.shift(); // Track last 7 for full palette cycling
   
-  console.log(`🎨 New cloud hue: ${Math.round(zone_hue)}° (${recentBlobHues.length > 1 ? 'different from last: ' + Math.round(recentBlobHues[recentBlobHues.length - 2]) + '°' : 'first spawn'})`);
+  const zoneName = COLOR_ZONES.find(z => {
+    if (z.min > z.max) return zone_hue >= z.min || zone_hue <= z.max;
+    return zone_hue >= z.min && zone_hue <= z.max;
+  })?.name || 'unknown';
+  console.log(`🎨 New cloud hue: ${Math.round(zone_hue)}° (${zoneName}) | Recent: [${recentBlobHues.map(h => Math.round(h)).join(', ')}]`);
   
     // Orbital path parameters - unique ellipse for each blob
     // Start orbital angle at 0 for predictable spawn position
@@ -1380,13 +1469,13 @@ function generateWatercolorBackground(pg, time = 0, dt = 16.666) {
   }
 
   const numSplotches = 8; // More clouds for richer composition
-  const arr_num = 180; // More shapes for finer detail
-  const shapeScale = 0.715; // 10% larger clouds with fine detail
+  const arr_num = 150; // Balanced shape count
+  const shapeScale = 0.50; // Smaller individual shapes
 
   // Shared one-shot life timing for all blobs
   const assembleDuration = 3000;   // ms
   const sustainDuration  = 20000;  // ms
-  const fadeDuration     = 7000;   // ms
+  const fadeDuration     = 18000;  // ms
   const totalLife        = assembleDuration + sustainDuration + fadeDuration;
   
   // Initial spawn interval: 3.5s to quickly populate, then 7s for normal cycle
@@ -1507,45 +1596,61 @@ function generateWatercolorBackground(pg, time = 0, dt = 16.666) {
       let attempt = 0;
       const maxHueAttempts = 10;
       
-      // Regenerate hue if it's too similar to the last 2 blobs
+      // MALIBU SUNSET + FOREST palette - same as manual spawn
+      const COLOR_ZONES = [
+        { name: 'coral-orange', min: 10, max: 35 },
+        { name: 'peachy-pink', min: 345, max: 15 },
+        { name: 'magenta-violet', min: 290, max: 330 },
+        { name: 'forest-green', min: 90, max: 140 },
+        { name: 'sea-green', min: 165, max: 195 },
+        { name: 'sky-blue', min: 200, max: 225 },
+        { name: 'golden-yellow', min: 40, max: 55 },
+      ];
+      
+      // Find which zones are NOT recently used
+      const usedZoneIndices = recentBlobHues.map(hue => {
+        for (let zi = 0; zi < COLOR_ZONES.length; zi++) {
+          const zone = COLOR_ZONES[zi];
+          let inZone = false;
+          if (zone.min > zone.max) {
+            inZone = hue >= zone.min || hue <= zone.max;
+          } else {
+            inZone = hue >= zone.min && hue <= zone.max;
+          }
+          if (inZone) return zi;
+        }
+        return -1;
+      });
+      
+      const availableZones = COLOR_ZONES.map((_, zi) => zi).filter(zi => !usedZoneIndices.includes(zi));
+      
       do {
-        if (hueNoise < 0.28) {
-          // ~28%: warm oranges and corals (~10°..40°)
-          zone_hue = pg.map(hueNoise, 0.0, 0.28, 10, 40);
-        } else if (hueNoise < 0.48) {
-          // ~20%: peachy pinks (~340°..360° wrapping to 0°..15°)
-          const tHue = pg.map(hueNoise, 0.28, 0.48, 0, 1);
-          const warm1 = pg.map(tHue, 0, 0.5, 340, 360); // late sunset sky
-          const warm2 = pg.map(tHue, 0.5, 1, 0, 15);    // soft rose
-          zone_hue = tHue < 0.5 ? warm1 : warm2;
-        } else if (hueNoise < 0.7) {
-          // ~22%: magentas and violets (~280°..330°)
-          zone_hue = pg.map(hueNoise, 0.48, 0.7, 280, 330);
-        } else if (hueNoise < 0.86) {
-          // ~16%: sea-greens / aqua (~165°..210°), soft and slightly desaturated
-          zone_hue = pg.map(hueNoise, 0.7, 0.86, 165, 210);
+        const zoneIndex = availableZones.length > 0 
+          ? availableZones[Math.floor(pg.random() * availableZones.length)]
+          : Math.floor(pg.random() * COLOR_ZONES.length);
+        const zone = COLOR_ZONES[zoneIndex];
+        
+        if (zone.min > zone.max) {
+          const range = (360 - zone.min) + zone.max;
+          const offset = pg.random() * range;
+          zone_hue = (zone.min + offset) % 360;
         } else {
-          // ~14%: soft sky blues (~205°..230°) for cooler twilight accents
-          zone_hue = pg.map(hueNoise, 0.86, 1.0, 205, 230);
+          zone_hue = zone.min + pg.random() * (zone.max - zone.min);
         }
         
-        // Check if this hue is too similar to ANY recent blob (within 50 degrees)
         const isSimilarToRecent = recentBlobHues.some(recentHue => {
           let diff = Math.abs(zone_hue - recentHue);
-          if (diff > 180) diff = 360 - diff; // Handle hue wrapping
-          return diff < 70; // Too similar if within 70 degrees
+          if (diff > 180) diff = 360 - diff;
+          return diff < 50;
         });
         
-        if (!isSimilarToRecent) break;
-        
-        // Try a different hue by perturbing the noise
-        hueNoise = (hueNoise + 0.237 * (attempt + 1)) % 1.0;
+        if (!isSimilarToRecent || availableZones.length === 0) break;
         attempt++;
       } while (attempt < maxHueAttempts);
       
       // Track this hue (only when first assigned)
       recentBlobHues.push(zone_hue);
-      if (recentBlobHues.length > 5) recentBlobHues.shift(); // Keep last 5 for better diversity
+      if (recentBlobHues.length > 7) recentBlobHues.shift(); // Track last 7 for full palette cycling
 
       // Initialize both static hue and color transition state
       state.hue = zone_hue;
@@ -1567,14 +1672,11 @@ function generateWatercolorBackground(pg, time = 0, dt = 16.666) {
       // GUARANTEED SIZE DIVERSITY - each blob gets a distinct size slot
       // Size range: 10% to 40% of screen (using smaller dimension)
       const screenSize = pg.min(pg.width, pg.height);
-      const minSize = screenSize * 0.10; // 10% of screen
-      const maxSize = screenSize * 0.40; // 40% of screen
+      const minSize = screenSize * 0.15; // 15% of screen
+      const maxSize = screenSize * 0.50; // 50% of screen
       
-      const sizeSlot = (i + cycleIndex * 3) % numSplotches; // 0 to numSplotches-1
-      const sizeT = sizeSlot / (numSplotches - 1); // 0 to 1 across all blobs
-      const slotCenter = pg.lerp(minSize, maxSize, sizeT);
-      const slotVariation = (maxSize - minSize) / numSplotches * 0.5; // Half slot width
-      const radius = slotCenter + pg.random(-slotVariation, slotVariation);
+      // Fully random size within range (no slot-based progression)
+      const radius = pg.random(minSize, maxSize);
 
       let zone_x, zone_y;
       
@@ -1907,13 +2009,13 @@ function generateWatercolorBackground(pg, time = 0, dt = 16.666) {
     state.vy += wanderY * timeScale;
     
     // Very light damping - preserves momentum while preventing runaway
-    const damping = 0.9995;
+    const damping = 0.9998;
     state.vx *= pg.pow(damping, timeScale);
     state.vy *= pg.pow(damping, timeScale);
     
     // Constrain max speed to prevent chaos
     const speed = pg.sqrt(state.vx * state.vx + state.vy * state.vy);
-    const maxSpeed = 3.0;
+    const maxSpeed = 6.0;
     if (speed > maxSpeed) {
       state.vx = (state.vx / speed) * maxSpeed;
       state.vy = (state.vy / speed) * maxSpeed;
@@ -1924,22 +2026,27 @@ function generateWatercolorBackground(pg, time = 0, dt = 16.666) {
     state.x += state.vx * timeScale * screenScale;
     state.y += state.vy * timeScale * screenScale;
     
-    // PACMAN-STYLE WRAP - expanded infinite canvas
-    // Clouds can roam wider but wrap when going too far off-screen
+    // BOUNCE BOUNDARY - clouds bounce off screen edges
+    // Allow some overshoot (20% of screen) before bouncing
     const halfWidth = pg.width / 2;
     const halfHeight = pg.height / 2;
-    const wrapMargin = halfWidth * 0.5; // 50% past edge before wrapping (expanded canvas)
+    const bounceMargin = pg.min(halfWidth, halfHeight) * 0.2; // 20% past edge before bounce
+    const bounceDamping = 0.6; // Lose 40% velocity on bounce
     
-    if (state.x > halfWidth + wrapMargin) {
-      state.x = -halfWidth - wrapMargin + 10;
-    } else if (state.x < -halfWidth - wrapMargin) {
-      state.x = halfWidth + wrapMargin - 10;
+    if (state.x > halfWidth + bounceMargin) {
+      state.x = halfWidth + bounceMargin;
+      state.vx *= -bounceDamping; // Reverse and dampen
+    } else if (state.x < -halfWidth - bounceMargin) {
+      state.x = -halfWidth - bounceMargin;
+      state.vx *= -bounceDamping;
     }
     
-    if (state.y > halfHeight + wrapMargin) {
-      state.y = -halfHeight - wrapMargin + 10;
-    } else if (state.y < -halfHeight - wrapMargin) {
-      state.y = halfHeight + wrapMargin - 10;
+    if (state.y > halfHeight + bounceMargin) {
+      state.y = halfHeight + bounceMargin;
+      state.vy *= -bounceDamping;
+    } else if (state.y < -halfHeight - bounceMargin) {
+      state.y = -halfHeight - bounceMargin;
+      state.vy *= -bounceDamping;
     }
     
     // Minimal center pull - just enough to keep clouds from drifting forever
@@ -2070,11 +2177,20 @@ function generateWatercolorBackground(pg, time = 0, dt = 16.666) {
       const form = arr[formIndex];
       // Smooth, noise-based jitter instead of per-frame randomGaussian,
       // so subshapes drift gently instead of jumping.
-      const jitterScale = radius * 0.15;
+      const jitterScale = radius * 0.35; // Wider spread to avoid center concentration
       const jx = (pg.noise(i * 10 + formIndex * 0.37, absoluteScaled * 0.0002) - 0.5) * 2 * jitterScale;
       const jy = (pg.noise(i * 10 + formIndex * 0.37 + 500, absoluteScaled * 0.0002) - 0.5) * 2 * jitterScale;
       pg.push();
       pg.translate(jx, jy);
+      
+      // INTERNAL DIFFERENTIAL SPIN - opposes the cloud's overall spin direction
+      // Creates a counter-rotating churning effect within each cloud
+      // Use smooth direction factor that transitions gradually through zero
+      const shapeSpinSpeed = pg.noise(i * 7.3 + formIndex * 0.19) * 1.5 + 0.5; // 0.5 to 2.0 variation (stronger)
+      // Smooth direction: tanh gives gradual -1 to 1 transition, scaled to be responsive
+      const smoothDir = -Math.tanh(state.accumulatedRotation * 0.006); // Ultra-gradual: 5x slower than macro spin
+      const internalSpin = absoluteScaled * 0.0006 * shapeSpinSpeed * smoothDir;
+      pg.rotate(internalSpin);
 
       // Smoothly interpolate alpha/saturation with blend-mode-aware adjustments
       // Use blendModeT for ultra-smooth alpha transitions
@@ -2128,13 +2244,16 @@ function generateWatercolorBackground(pg, time = 0, dt = 16.666) {
         // Sustain: hold near full brightness
         lifeAlpha = 1;
       } else if (lifeTime < totalLife) {
-        // Fade-out: 1 -> 0 with a gentle ease-out
+        // Fade-out: 1 -> 0 with gentle ease-out that slows at the end
         const t = (lifeTime - assembleDuration - sustainDuration) / fadeDuration; // 0..1
-        const eased = t * t * (3 - 2 * t);     // smoothstep
+        // Quadratic ease-out: fast start, slow finish (opposite of smoothstep)
+        const eased = t * (2 - t);
         lifeAlpha = 1 - eased;
+        // Never go fully invisible - keep minimum 5% alpha
+        lifeAlpha = Math.max(lifeAlpha, 0.05);
       } else {
-        // After death: remain dark
-        lifeAlpha = 0;
+        // After death: very dim but not instant disappear
+        lifeAlpha = 0.02;
       }
 
       // Per-sub-shape opacity wave: center around 1, dip toward 0 based on depth.
@@ -2173,9 +2292,11 @@ function generateWatercolorBackground(pg, time = 0, dt = 16.666) {
 
       // Radial saturation gradient - smoothly blend between color and grayscale modes
       // Calculate color mode saturation (with radial gradient)
-      const saturationPower = pg.lerp(0.5, 1.2, easedT);
-      const minSat = pg.lerp(0.35, 0.55, easedT);
-      const saturationFactor = pg.map(pg.pow(rNorm, saturationPower), 0, 1, 1.0, minSat);
+      // Higher power = faster falloff from center (smaller saturated core)
+      const saturationPower = pg.lerp(1.5, 2.0, easedT);
+      const minSat = pg.lerp(0.25, 0.45, easedT);
+      const maxCenterSat = 0.75; // Cap center saturation at 75%
+      const saturationFactor = pg.map(pg.pow(rNorm, saturationPower), 0, 1, maxCenterSat, minSat);
       const colorModeSat = baseSat * saturationFactor;
       
       // Grayscale mode saturation (flat, no gradient)
@@ -2534,6 +2655,54 @@ function drawDebugGrid() {
   textAlign(CENTER, CENTER);
   fill(255, 0, 0);
   text(`CENTER\n(0,0)`, width / 2, height / 2 - 30);
+  
+  // PERFORMANCE MONITORING
+  const currentFrameTime = millis();
+  if (lastFrameTime > 0) {
+    const delta = currentFrameTime - lastFrameTime;
+    frameDeltas.push(delta);
+    if (frameDeltas.length > FRAME_HISTORY) frameDeltas.shift();
+    
+    // Detect issues and log to console
+    if (delta > DROP_THRESHOLD) {
+      droppedFrames++;
+      const droppedCount = Math.floor(delta / TARGET_FRAME_TIME) - 1;
+      console.error(`🚨 FRAME DROP: ~${droppedCount} frames dropped (${Math.round(delta)}ms) | Total drops: ${droppedFrames}`);
+      perfWarnings.push({ time: currentFrameTime, msg: `⚠️ DROPPED ~${droppedCount} FRAMES (${Math.round(delta)}ms)`, severity: 'error' });
+    } else if (delta > LAG_THRESHOLD) {
+      lagSpikes++;
+      console.warn(`⚡ LAG SPIKE: ${Math.round(delta)}ms frame time | Total lags: ${lagSpikes}`);
+      perfWarnings.push({ time: currentFrameTime, msg: `⚡ LAG SPIKE (${Math.round(delta)}ms)`, severity: 'warn' });
+    }
+    
+    // Keep only recent warnings (last 5 seconds)
+    perfWarnings = perfWarnings.filter(w => currentFrameTime - w.time < 5000);
+  }
+  lastFrameTime = currentFrameTime;
+  
+  // Calculate average FPS
+  const avgDelta = frameDeltas.length > 0 ? frameDeltas.reduce((a, b) => a + b, 0) / frameDeltas.length : TARGET_FRAME_TIME;
+  const currentFPS = Math.round(1000 / avgDelta);
+  const minDelta = frameDeltas.length > 0 ? Math.max(...frameDeltas) : 0; // Worst frame
+  
+  // Display performance stats
+  textAlign(LEFT, TOP);
+  textSize(14);
+  const fpsColor = currentFPS >= 50 ? color(0, 255, 0) : (currentFPS >= 30 ? color(255, 255, 0) : color(255, 0, 0));
+  fill(fpsColor);
+  text(`FPS: ${currentFPS} | Worst: ${Math.round(minDelta)}ms | Drops: ${droppedFrames} | Lags: ${lagSpikes}`, 10, 30);
+  
+  // Display recent warnings
+  if (perfWarnings.length > 0) {
+    textSize(12);
+    let warnY = 50;
+    for (let i = Math.max(0, perfWarnings.length - 3); i < perfWarnings.length; i++) {
+      const w = perfWarnings[i];
+      fill(w.severity === 'error' ? color(255, 100, 100) : color(255, 200, 100));
+      text(w.msg, 10, warnY);
+      warnY += 15;
+    }
+  }
   
   // GESTURE TYPE DISPLAY - large and prominent at top center
   textAlign(CENTER, TOP);
