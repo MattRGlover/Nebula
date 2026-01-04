@@ -233,6 +233,16 @@ function mouseDragged() {
     touchPath.push({x: mouseX, y: mouseY, t: currentTime});
   }
   
+  // CAP touchPath to prevent memory bloat and gesture drift
+  const MAX_TOUCH_POINTS = 300; // ~5 seconds of gesture at 60fps
+  if (touchPath.length > MAX_TOUCH_POINTS) {
+    const trimCount = touchPath.length - MAX_TOUCH_POINTS;
+    touchPath.splice(0, trimCount);
+    // Adjust indices that reference touchPath
+    lastProcessedIndex = Math.max(0, lastProcessedIndex - trimCount);
+    lastSwipeCheckIndex = Math.max(0, lastSwipeCheckIndex - trimCount);
+  }
+  
   // Smooth interpolation - balanced for performance
   const dist = sqrt(vx * vx + vy * vy);
   const stepSize = 2; // 2 pixel steps - smooth but performant
@@ -330,6 +340,16 @@ function touchMoved() {
     }
   } else {
     touchPath.push({x: mouseX, y: mouseY, t: currentTime});
+  }
+  
+  // CAP touchPath to prevent memory bloat and gesture drift
+  const MAX_TOUCH_POINTS = 300; // ~5 seconds of gesture at 60fps
+  if (touchPath.length > MAX_TOUCH_POINTS) {
+    const trimCount = touchPath.length - MAX_TOUCH_POINTS;
+    touchPath.splice(0, trimCount);
+    // Adjust indices that reference touchPath
+    lastProcessedIndex = Math.max(0, lastProcessedIndex - trimCount);
+    lastSwipeCheckIndex = Math.max(0, lastSwipeCheckIndex - trimCount);
   }
   
   // Smooth interpolation - balanced for performance
